@@ -97,7 +97,7 @@ const STATUS = {
   needs_work: { label: 'Needs work', text: 'Someone asked for changes. The meal bot will revise the plan.' },
   locked: { label: 'Locked', text: 'Everyone approved. This plan is set.' },
 };
-const statusChip = (st) => h('span', { class: `chip ${st}` }, st === 'locked' ? '🔒 ' : '', STATUS[st]?.label || st);
+const statusChip = (st) => h('span', { class: `chip ${st}` }, STATUS[st]?.label || st);
 
 /* ---------------- routing ---------------- */
 function route() {
@@ -168,10 +168,29 @@ function render() {
   return renderWeek();
 }
 
+/* simple line icons for the tab bar (inline SVG, built with DOM APIs) */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const ICONS = {
+  week: [['rect', { x: 3.5, y: 5, width: 17, height: 15.5, rx: 3 }], ['path', { d: 'M3.5 10h17M8 3v4M16 3v4' }]],
+  shop: [['path', { d: 'M3 4h2.2l2.1 10.1a2 2 0 0 0 2 1.6h7.5a2 2 0 0 0 1.9-1.4L20.5 8H6.3' }], ['circle', { cx: 10, cy: 20, r: 1.3 }], ['circle', { cx: 17, cy: 20, r: 1.3 }]],
+  recipes: [['path', { d: 'M6 3.5h11.5a1.5 1.5 0 0 1 1.5 1.5v15.5H7a2 2 0 0 1-2-2V4.5a1 1 0 0 1 1-1z' }], ['path', { d: 'M5 18.5a2 2 0 0 1 2-2h12M9 8h6' }]],
+  settings: [['path', { d: 'M4 7h9M17 7h3M4 17h3M11 17h9' }], ['circle', { cx: 15, cy: 7, r: 2 }], ['circle', { cx: 9, cy: 17, r: 2 }]],
+};
+function icon(name) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('class', 'ico'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('focusable', 'false');
+  for (const [tag, attrs] of ICONS[name] || []) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    svg.append(el);
+  }
+  return svg;
+}
+
 function tabbar(active) {
-  const tab = (id, ico, label) => h('a', { href: `#/${id}`, class: active === id ? 'active' : '' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, ico), label);
+  const tab = (id, label) => h('a', { href: `#/${id}`, class: active === id ? 'active' : '', 'aria-current': active === id ? 'page' : null }, icon(id), label);
   return h('nav', { class: 'tabbar', 'aria-label': 'Main' }, h('div', { class: 'inner' },
-    tab('week', '🍽️', 'This week'), tab('shop', '🛒', 'Shopping'), tab('recipes', '📖', 'Recipes'), tab('settings', '⚙️', 'Settings')));
+    tab('week', 'This week'), tab('shop', 'Shopping'), tab('recipes', 'Recipes'), tab('settings', 'Settings')));
 }
 function topbar(title, extra) {
   return h('header', { class: 'topbar' },
@@ -280,7 +299,7 @@ async function renderWeek() {
   } else {
     const st = d.week.status;
     parts.push(h('div', { class: `status-banner ${st}` },
-      h('strong', null, st === 'locked' ? '🔒 ' : '', STATUS[st]?.label || st),
+      h('strong', null, STATUS[st]?.label || st),
       h('div', { class: 'small' }, STATUS[st]?.text || ''),
       st === 'locked' && d.week.locked_at ? h('div', { class: 'small muted' }, `Locked ${fmtTs(d.week.locked_at)}`) : null));
     parts.push(nightsCard(ws, d.slots));
@@ -311,8 +330,8 @@ function nightsCard(ws, slots) {
       return h('div', { class: 'stack', style: null },
         h('div', { class: 'title' }, title),
         h('div', { class: 'meta' },
-          s.is_leftover_night ? h('span', { class: 'chip left' }, '♻️ Leftover night') : null,
-          s.makes_leftovers ? h('span', { class: 'chip makes' }, '📦 Makes leftovers') : null,
+          s.is_leftover_night ? h('span', { class: 'chip left' }, 'Leftover night') : null,
+          s.makes_leftovers ? h('span', { class: 'chip makes' }, 'Makes leftovers') : null,
           h('span', { class: 'small muted' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`),
           recipe?.source_name ? h('span', { class: 'small muted' }, `· ${recipe.source_name}`) : null,
           from ? h('span', { class: 'small muted' }, `· from ${fmtD(from.date, { weekday: 'long' })}`) : null),
@@ -353,14 +372,14 @@ function votesCard({ week, slots, votes }) {
     const comment = h('textarea', { placeholder: 'What should change? e.g. “Swap Thursday for something quicker”', maxlength: 2000 }, myVote?.decision === 'needs_work' ? myVote.comment || '' : '');
     const nwForm = h('div', { class: 'stack hidden' }, h('label', null, 'Comment for the meal bot', comment));
     const approveBtn = h('button', { class: 'approve' }, myVote?.decision === 'approve' ? '✓ Approved' : 'Approve');
-    const nwBtn = h('button', { class: 'warn' }, 'Needs work');
-    const sendBtn = h('button', { class: 'warn block' }, 'Send “needs work”');
+    const nwBtn = h('button', { class: 'secondary' }, 'Needs work');
+    const sendBtn = h('button', { class: 'secondary block' }, 'Send “needs work”');
     const cast = async (decision, text, btn) => {
       btn.disabled = true;
       const { error } = await sb.from('votes').upsert({ week_id: week.id, member_id: me.id, decision, comment: text || null }, { onConflict: 'week_id,member_id' });
       btn.disabled = false;
       if (error) return toast(friendlyError(error), true);
-      toast(decision === 'approve' ? 'Approved! 🎉' : 'Sent. The meal bot will revise.');
+      toast(decision === 'approve' ? 'Approved!' : 'Sent. The meal bot will revise.');
       await refreshWeeks();
       renderWeek();
     };
@@ -386,7 +405,7 @@ function votesCard({ week, slots, votes }) {
 
 function checkNowCard(week) {
   const status = h('div', { class: 'small muted' }, '');
-  const btn = h('button', { class: 'secondary block' }, '🔄 Check now');
+  const btn = h('button', { class: 'secondary block' }, 'Check now');
   const showLast = async () => {
     const { data } = await sb.from('app_events').select('created_at, processed_at').eq('household_id', S.household.id).eq('event_type', 'check_now').order('created_at', { ascending: false }).limit(1);
     const e = data?.[0];
@@ -449,7 +468,7 @@ async function renderShop() {
       cards.push(h('section', { class: 'card aisle' }, h('h3', null, k), its.map(itemRow)));
     }
     if (!items.length) cards.push(h('div', { class: 'card muted center' }, 'No items yet. Add one below, or tap Check now.'));
-    else if (!cards.length) cards.push(h('div', { class: 'card muted center' }, 'Everything is checked off. Nice work! 🎉'));
+    else if (!cards.length) cards.push(h('div', { class: 'card muted center' }, 'Everything is checked off. Nice work!'));
     listWrap.replaceChildren(...cards);
   };
   const itemRow = (it) => {
@@ -506,7 +525,7 @@ async function renderShop() {
 
   draw();
   content.replaceChildren(
-    h('div', { class: 'row spread' }, h('div', null, h('strong', null, `🛒 ${store}`), ' ', counter), hideBtn),
+    h('div', { class: 'row spread' }, h('div', null, h('strong', null, store), ' ', counter), hideBtn),
     listWrap, addForm, checkNowCard(week),
     h('p', { class: 'small muted center' }, 'Prices only show when the meal bot has a verified price with a source.'));
 }
@@ -543,7 +562,7 @@ function renderRecipes() {
   draw();
   mount(topbar('Recipes', h('div', { class: 'row', style: null }, q)),
     h('div', { class: 'content' },
-      h('a', { class: 'btn', href: '#/recipes/new' }, '+ Add a recipe'),
+      h('a', { class: 'btn block', href: '#/recipes/new' }, '+ Add a recipe'),
       list),
     tabbar('recipes'));
   // keep fresh in the background
