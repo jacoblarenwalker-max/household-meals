@@ -38,12 +38,18 @@ function h(tag, attrs, ...children) {
 function mount(...nodes) { appEl.replaceChildren(...nodes); }
 
 let toastTimer;
-function toast(text, isError = false) {
+// optional action: { label: 'Undo', onClick } adds a button and keeps the toast up a little longer
+function toast(text, isError = false, action = null) {
   const t = document.getElementById('toast');
-  t.textContent = text;
-  t.className = 'toast show' + (isError ? ' error' : '');
+  t.replaceChildren(h('span', null, text));
+  if (action) {
+    const b = h('button', { type: 'button', class: 'toast-action' }, action.label);
+    b.addEventListener('click', () => { clearTimeout(toastTimer); t.className = 'toast'; t.replaceChildren(); action.onClick(); });
+    t.append(b);
+  }
+  t.className = 'toast show' + (isError ? ' error' : '') + (action ? ' has-action' : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = 'toast'; }, isError ? 5000 : 2600);
+  toastTimer = setTimeout(() => { t.className = 'toast'; }, isError ? 5000 : action ? 7000 : 2600);
 }
 
 function friendlyError(err) {
@@ -1173,25 +1179,63 @@ async function renderStaples() {
   const week = wk.data;
   let items = [];
   if (week) {
-    const r = await sb.from('shopping_list_items').select('id, name, position, staple_id').eq('week_id', week.id);
+    const r = await sb.from('shopping_list_items').select('id, name, position, staple_id, source, checked').eq('week_id', week.id);
     if (r.error) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(r.error)));
     items = r.data || [];
   }
   if (route().view !== 'staples' || ws !== S.weekStart) return;
 
   let editingId = null;
+  const live = () => route().view === 'staples' && ws === S.weekStart;
+  const budgetSlot = h('div', { class: 'budget-slot' });
+  const refreshBudget = () => budgetSummary(ws).then((sum) => { if (sum && live()) budgetSlot.replaceChildren(budgetBar(sum)); });
   const onList = (s) => items.some((i) => i.staple_id === s.id || norm(i.name) === norm(s.name));
+  // the row this staple put on the list (only unchecked staple rows can be taken back off from here)
+  const listRow = (s) => items.find((i) => i.staple_id === s.id && i.source === 'staple' && !i.checked);
   // a staple's verified Walmart price (if any) travels with it onto the list so it counts toward the budget
   const toRow = (s) => ({ name: s.name, quantity: s.quantity ?? null, unit: s.unit || null, category: s.category || 'Other', source: 'staple', staple_id: s.id,
     ...(hasPrice(s) ? { price_cents: s.price_cents, price_source: s.price_source, price_verified_at: s.price_verified_at || null, walmart_product_url: s.walmart_product_url || null } : {}) });
-  const addStaples = async (list, btn) => {
+  // take rows this screen just added back off the list (Undo); never touches dinner, breakfast/lunch or manual rows
+  const removeRows = async (rows) => {
+    const ids = rows.filter((r) => r && r.source === 'staple' && r.staple_id && !r.checked).map((r) => r.id);
+    if (!ids.length) return 0;
+    const { error } = await sb.from('shopping_list_items').delete().in('id', ids).eq('source', 'staple').eq('checked', false);
+    if (error) { toast(friendlyError(error), true); return 0; }
+    items = items.filter((i) => !ids.includes(i.id));
+    return ids.length;
+  };
+  const addStaples = async (list, btn, { weekly = false } = {}) => {
     if (!week) return;
     btn.disabled = true;
-    try { toast(listResultText(await addToList(week.id, list.map(toRow), items))); } catch (err) { toast(friendlyError(err), true); }
-    btn.disabled = false; draw();
+    try {
+      const res = await addToList(week.id, list.map(toRow), items);
+      if (!res.added.length) toast(listResultText(res));
+      else {
+        const n = res.added.length;
+        const msg = weekly ? `Added ${n} staple${n === 1 ? '' : 's'}${res.skipped.length ? ` · ${res.skipped.length} already on it` : ''}` : listResultText(res);
+        toast(msg, false, { label: 'Undo', onClick: async () => {
+          const k = await removeRows(res.added);
+          if (k) toast(`Took ${k} staple${k === 1 ? '' : 's'} back off the list`);
+          if (live()) { draw(); refreshBudget(); }
+        } });
+      }
+    } catch (err) { toast(friendlyError(err), true); }
+    btn.disabled = false;
+    if (live()) { draw(); refreshBudget(); }
+  };
+  const setWeekly = async (s, val) => {
+    const prev = !!s.is_weekly; s.is_weekly = val; draw();
+    const { error } = await sb.from('staples').update({ is_weekly: val }).eq('id', s.id);
+    if (error) { s.is_weekly = prev; toast(friendlyError(error), true); draw(); }
   };
 
-  const bulkBtn = h('button', { class: 'block' });
+  // one tap: every weekly staple onto the selected week's list
+  const weeklyBtn = h('button', { class: 'block weekly-btn' });
+  weeklyBtn.addEventListener('click', () => addStaples(staples.filter((s) => s.is_weekly && !onList(s)), weeklyBtn, { weekly: true }));
+  const weeklyNote = h('p', { class: 'small weekly-note' });
+  const weeklyCard = h('section', { class: 'card weekly-card', id: 'weekly' },
+    h('div', { class: 'card-head' }, h('h2', null, 'Every week')), weeklyBtn, weeklyNote);
+  const bulkBtn = h('button', { class: 'block secondary' });
   bulkBtn.addEventListener('click', () => addStaples(staples.filter((s) => s.active && !onList(s)), bulkBtn));
   const bulkNote = h('p', { class: 'small muted center' });
   const listWrap = h('div', { class: 'stack' });
@@ -1202,12 +1246,14 @@ async function renderStaples() {
       category: h('select', { 'aria-label': 'Category' }, [...new Set([...STAPLE_CATS, s?.category].filter(Boolean))].map((c) => h('option', { value: c }, c))),
       quantity: h('input', { type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: 'Qty', value: s?.quantity ?? '', 'aria-label': 'Quantity' }),
       unit: h('input', { maxlength: 40, placeholder: 'Unit (pack, box…)', value: s?.unit || '', 'aria-label': 'Unit' }),
+      weekly: h('input', { type: 'checkbox', name: 'is_weekly' }),
     };
+    f.weekly.checked = !!s?.is_weekly;
     f.category.value = s?.category || 'Snacks';
     const save = h('button', { type: 'submit' }, s ? 'Save' : 'Add staple');
     const form = h('form', { class: s ? 'meal-edit' : 'stack', onsubmit: async (e) => {
       e.preventDefault();
-      const row = { name: f.name.value.trim(), category: f.category.value, quantity: f.quantity.value === '' ? null : Number(f.quantity.value), unit: f.unit.value.trim() || null };
+      const row = { name: f.name.value.trim(), category: f.category.value, quantity: f.quantity.value === '' ? null : Number(f.quantity.value), unit: f.unit.value.trim() || null, is_weekly: f.weekly.checked };
       if (!row.name) return;
       save.disabled = true;
       const q = s ? sb.from('staples').update(row).eq('id', s.id)
@@ -1223,6 +1269,7 @@ async function renderStaples() {
     s ? f.name : h('label', null, 'Item', f.name),
     s ? f.category : h('label', null, 'Category', f.category),
     h('div', { class: 'grid2' }, f.quantity, f.unit),
+    h('label', { class: 'check-line' }, f.weekly, h('span', null, '★ Weekly', h('span', { class: 'hint' }, ' · added by “Add weekly staples”'))),
     s ? h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'secondary', onclick: onDone }, 'Cancel'), h('span', { class: 'grow' }),
       h('button', { type: 'button', class: 'ghost danger', onclick: async () => {
         if (!confirm(`Remove “${s.name}” from staples? It stays on any shopping list it’s already on.`)) return;
@@ -1245,18 +1292,45 @@ async function renderStaples() {
       if (error) { s.active = !val; toast(friendlyError(error), true); }
       draw();
     });
+    const star = h('button', {
+      type: 'button', class: `ghost wstar${s.is_weekly ? ' on' : ''}`, 'aria-pressed': s.is_weekly ? 'true' : 'false',
+      'aria-label': `${s.name}: buy every week`, title: s.is_weekly ? 'Weekly staple (tap to stop)' : 'Mark as weekly',
+    }, s.is_weekly ? '★' : '☆');
+    star.addEventListener('click', () => setWeekly(s, !s.is_weekly));
     const there = week && onList(s);
     const addBtn = week && !there ? h('button', { class: 'ghost add', 'aria-label': `Add ${s.name} to this week’s list` }, 'Add') : null;
     if (addBtn) addBtn.addEventListener('click', () => addStaples([s], addBtn));
-    return h('div', { class: `item${s.active ? '' : ' inactive'}` }, cb,
+    // on the list: tap the green chip to take an unchecked staple row back off
+    const row = there ? listRow(s) : null;
+    const onChip = !there ? null : row ? h('button', { type: 'button', class: 'chip on chip-btn', title: 'Tap to take it off this week’s list', 'aria-label': `${s.name} is on the list. Remove it from this week’s list` }, '✓ On list')
+      : h('span', { class: 'chip on' }, '✓ On list');
+    if (row) onChip.addEventListener('click', async () => {
+      onChip.disabled = true;
+      if (await removeRows([row])) toast(`Took ${s.name} off the list`, false, { label: 'Undo', onClick: () => addStaples([s], onChip) });
+      if (live()) { draw(); refreshBudget(); }
+    });
+    // name on top; list status (✓ On list / Add), Weekly and price underneath so long names get the full width
+    const info = [qty, hasPrice(s) ? `${money(s.price_cents)} at Walmart` : null].filter(Boolean).join(' · ');
+    return h('div', { class: `item staple${s.active ? '' : ' inactive'}${s.is_weekly ? ' weekly' : ''}` }, cb,
       h('div', { class: 'grow' }, h('div', { class: 'name' }, s.name),
-        qty || hasPrice(s) ? h('div', { class: 'small muted' }, [qty, hasPrice(s) ? `${money(s.price_cents)} at Walmart` : null].filter(Boolean).join(' · ')) : null),
+        h('div', { class: 'staple-meta' }, onChip || addBtn, s.is_weekly ? h('span', { class: 'chip weekly' }, 'Weekly') : null,
+          info ? h('span', { class: 'small muted' }, info) : null)),
       h('div', { class: 'side' },
-        there ? h('span', { class: 'chip on' }, '✓ On list') : addBtn,
+        star,
         h('button', { class: 'ghost', 'aria-label': `Edit ${s.name}`, onclick: () => { editingId = s.id; draw(); } }, 'Edit')));
   };
 
   const draw = () => {
+    const weekly = staples.filter((s) => s.is_weekly);
+    const wPending = weekly.filter((s) => !onList(s));
+    const names = (list) => list.map((s) => s.name).join(', ');
+    if (!weekly.length) { weeklyBtn.disabled = true; weeklyBtn.textContent = 'Add weekly staples (0)'; weeklyNote.textContent = 'Tap ☆ on a staple to mark it weekly, then add them all in one tap.'; }
+    else if (!week) { weeklyBtn.disabled = true; weeklyBtn.textContent = `Add weekly staples (${wPending.length})`; weeklyNote.textContent = 'No shopping list for this week yet. It appears once the meal bot plans the week.'; }
+    else if (!wPending.length) { weeklyBtn.disabled = true; weeklyBtn.textContent = '✓ Weekly staples are on the list'; weeklyNote.textContent = `${names(weekly)} · ${weekLabel(ws)} list.`; }
+    else {
+      weeklyBtn.disabled = false; weeklyBtn.textContent = `Add weekly staples (${wPending.length})`;
+      weeklyNote.textContent = `${names(wPending)}${wPending.length < weekly.length ? ` · ${weekly.length - wPending.length} already on it` : ''} · ${weekLabel(ws)} list, ${storeName()}.`;
+    }
     const pending = staples.filter((s) => s.active && !onList(s));
     if (!week) { bulkBtn.disabled = true; bulkBtn.textContent = 'Add checked to list'; bulkNote.textContent = 'No shopping list for this week yet. It appears once the meal bot plans the week.'; }
     else if (!staples.length) { bulkBtn.disabled = true; bulkBtn.textContent = 'Add checked to list'; bulkNote.textContent = 'Add a few staples below to get started.'; }
@@ -1275,8 +1349,11 @@ async function renderStaples() {
   const resetAdd = () => addCard.replaceChildren(staplesForm(null, () => { resetAdd(); draw(); }));
   resetAdd();
   draw();
+  refreshBudget();
   content.replaceChildren(
-    h('p', { class: 'small muted' }, 'Snacks, drinks and basics outside of meals. Check the ones you want this week, then add them to the list.'),
+    budgetSlot,
+    weeklyCard,
+    h('p', { class: 'small muted' }, 'Snacks, drinks and basics outside of meals. ★ marks the weekly ones. Or check the ones you want this week, then add them to the list.'),
     h('div', { class: 'toolbar' }, bulkBtn, bulkNote),
     listWrap,
     addCard);

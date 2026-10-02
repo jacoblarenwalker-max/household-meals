@@ -60,6 +60,14 @@ backed by a Supabase project.
   category. Add / edit / remove, check the ones you want, then **Add N checked to list** (or **Add** per item). Adds go
   to the selected week's list (Walmart) with `source = 'staple'`, copying the staple's price fields if it has them; a
   staple is never added twice to the same week.
+  - **Weekly staples**: tap ☆ on a staple (or tick **★ Weekly** in its form) to set `staples.is_weekly`. The
+    **Every week** card at the top has one big **Add weekly staples (N)** button (N = weekly staples not on the
+    selected week's list yet) that adds them all at once as `source = 'staple'` rows with their prices, skipping any
+    already on the list (same staple or same name), then shows "Added N staples" with **Undo** and refreshes the
+    budget bar. Undo, or tapping a staple's green **✓ On list** chip, takes only that unchecked staple row back off
+    the list. `is_weekly` is separate from the per-item checkbox (`active`), which still drives **Add N checked to
+    list**. Milk and eggs start out weekly. Staple rows are never removed by dinner rebuilds (only `source` null or
+    `dinner` rows are).
 - **Recipes**: search, add and edit household recipes, including a **Short description** (`recipes.description`, one
   plain line under ~60 characters, max 120) that This week shows under the dinner name. Tap the ☆ star on a recipe (or **Add to favorites** on its
   page or in the Swap picker) to make it a go-to dinner.
@@ -87,7 +95,7 @@ backed by a Supabase project.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and

@@ -458,3 +458,28 @@ button.star.on { background: var(--sky); color: var(--navy); border-color: var(-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0ms !important; }
 }
+
+/* staples: weekly set (one tap) */
+.weekly-card { display: grid; gap: 10px; }
+.weekly-card .card-head { margin-bottom: 4px; }
+button.weekly-btn { min-height: 56px; font-size: 1.0625rem; font-weight: 800; background: var(--sky); color: var(--navy); border: 2px solid var(--sky-edge); }
+button.weekly-btn:hover { background: var(--sky-hover); color: var(--navy); }
+button.weekly-btn:disabled { opacity: 1; background: var(--beige); color: var(--ink); border-color: var(--tan); cursor: default; }
+.weekly-note { margin: 0; color: var(--muted); text-align: center; line-height: 1.45; }
+.chip.weekly { padding: 2px 9px; font-size: .75rem; font-weight: 750; background: var(--beige); color: var(--ink); }
+.staple-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; }
+.staple-meta:empty { display: none; }
+.item.staple .staple-meta button.ghost.add { min-height: 32px; min-width: 0; padding: 3px 12px; border: 1px solid var(--sky-edge); background: var(--sky); color: var(--navy); font-size: .8125rem; border-radius: 999px; }
+.item.staple .staple-meta button.ghost.add:hover { background: var(--sky-hover); color: var(--navy); }
+.item button.ghost.wstar { font-size: 1.375rem; line-height: 1; font-weight: 400; color: var(--muted); padding: 6px; min-width: 44px; min-height: 44px; border-radius: 999px; }
+.item button.ghost.wstar.on { background: var(--beige); }
+.item button.ghost.wstar.on { color: var(--sky-deep); }
+.item button.ghost.wstar:hover { color: var(--navy); background: var(--beige); }
+button.chip.chip-btn { min-height: 32px; border: 0; padding: 3px 10px; font-size: .75rem; font-weight: 700; border-radius: 999px; background: var(--green); color: #FFFFFF; }
+button.chip.chip-btn:hover { background: #256B4E; color: #FFFFFF; }
+label.check-line { display: flex; align-items: center; gap: 10px; font-weight: 650; cursor: pointer; }
+label.check-line input[type=checkbox] { width: 22px; height: 22px; min-height: 0; flex: none; margin: 0; padding: 0; accent-color: var(--sky-deep); }
+.toast.has-action > span { white-space: nowrap; }
+.toast.has-action { display: flex; align-items: center; gap: 14px; pointer-events: auto; padding: 8px 8px 8px 18px; }
+.toast-action { min-height: 36px; padding: 6px 14px; border-radius: 10px; background: var(--sky); color: var(--navy); border: 1px solid var(--sky-edge); font-weight: 800; }
+.toast-action:hover { background: var(--sky-hover); color: var(--navy); }
