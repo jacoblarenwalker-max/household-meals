@@ -55,7 +55,9 @@ backed by a Supabase project.
 - **Shopping**: the selected week's list grouped by aisle/category, with dinner, breakfast/lunch and staple items
   together and a small source label. Check items off, add or remove items. Prices only show when the row has both
   `price_cents` and `price_source`; the product line links to `walmart_product_url` when set. Shows the week's total
-  and the monthly budget bar.
+  and the monthly budget bar. Names are short (`Sour cream`); any detail lives in `shopping_list_items.note` and shows
+  as one small muted line under the name (tap it to see all of it). An item without a verified price shows a muted
+  **Pricing…** tag (a `needs_price` request is waiting) or **Unpriced** where the price would be.
 - **Staples**: snacks, drinks, breakfast basics and household items bought outside of meals (table `staples`), grouped by
   category. Add / edit / remove, check the ones you want, then **Add N checked to list** (or **Add** per item). Adds go
   to the selected week's list (Walmart) with `source = 'staple'`, copying the staple's price fields if it has them; a
@@ -97,9 +99,60 @@ backed by a Supabase project.
 - **Check now** (This week and Shopping screens): inserts an `app_events` row (`check_now`) asking the meal bot to sync.
   Besides the Supabase API, the browser only talks to its own push service when you turn notifications on.
 
+## For the meal bot: names, notes and prices
+
+**Short names + a note.** Write `shopping_list_items.name` as the plain item ("Sour cream", "Chicken thighs",
+"Black beans"), at most ~40 characters, with no parentheses, meal lists or can sizes. Put that detail in
+`shopping_list_items.note` (≤ 500 chars), e.g. name `Sour cream`, note `Chili (incl. the heavy-cream swap) + haystacks
+topping`; `Honey` + `Pantry check: skip if you have some`. Short names also let staples and preset items match
+(duplicates are detected by name). The Oct 5–11 rows were cleaned up this way in migration `item_notes_and_unpriced`.
+
+**Every item gets priced.** The household buys the lowest-cost matching option at Walmart (usually Great Value). The
+browser can't fetch Walmart prices, so when someone adds an item with no verified price (a manual list item, a
+staple, a breakfast/lunch line, a preset ingredient, or a preset-generated list row) the app inserts an `app_events`
+row with `event_type = 'needs_price'` and `payload.items = [{"table": "shopping_list_items" | "staples" |
+"meal_presets", "id": …, "index": <ingredient index, presets only>, "name": …}]` (plus `week_start`,
+`requested_by`, `source: 'web_app'`). It never sends a push notification. The wake routine should handle it like
+`check_now`: price each item, then set `processed_at`. "Pricing…" shows while the event is unprocessed (last 14 days).
+
+To price an item: search walmart.com with **no store selected**, pick the cheapest matching product by unit price at a
+sensible size for 2 people, and set `price_cents`, `walmart_product_url` (`https://www.walmart.com/ip/…`),
+`price_verified_at = now()` and `price_source` like `walmart.com online price, no store selected, lowest-cost option:
+Great Value Whole Vitamin D Milk, 1 gallon, https://www.walmart.com/ip/…, checked 2026-10-04`. Never invent a price:
+if walmart.com blocks the lookup, leave it unpriced (it stays in the view below and the app shows "Unpriced").
+Breakfast/lunch ingredients in `meal_presets.ingredients` / `meal_plan_items.ingredients` carry the same four keys on
+each ingredient object; preset rows on the list copy them, and editing a preset keeps a price while the ingredient's
+name is unchanged.
+
+**What's still unpriced:** view `public.unpriced_items` (security invoker, so RLS applies; members can read it, anon
+can't). One row per unpriced staple, shopping list row, breakfast/lunch ingredient and preset ingredient, with
+`kind` (`staple` | `shopping_list_item` | `meal_plan_ingredient` | `preset_ingredient`), `household_id`, `week_id`,
+`week_start`, `item_id`, `ingredient_index` (0-based, ingredients only), `name`, `quantity`, `unit`, `category`,
+`source`, `note` (list note, or the meal/preset title) and `created_at`. The Sunday price check and the wake routine:
+
+```sql
+-- everything to price for the household (skip old weeks)
+select * from public.unpriced_items
+where household_id = '733cd381-babb-490c-863f-ee16ee942ad4'
+  and (week_start is null or week_start >= date_trunc('week', now() at time zone 'America/Denver')::date)
+order by kind, week_start nulls first, name;
+
+-- price a staple or list row
+update public.shopping_list_items set price_cents = 247, price_source = 'walmart.com online price, no store selected, lowest-cost option: …',
+  walmart_product_url = 'https://www.walmart.com/ip/…', price_verified_at = now() where id = '…';
+
+-- price ingredient N of a preset (same pattern for meal_plan_items)
+update public.meal_presets set ingredients = jsonb_set(ingredients, '{0}', ingredients->0 || jsonb_build_object(
+  'price_cents', 247, 'price_source', 'walmart.com online price, no store selected, lowest-cost option: …',
+  'walmart_product_url', 'https://www.walmart.com/ip/…', 'price_verified_at', now())) where id = '…';
+
+-- then mark the request done
+update public.app_events set processed_at = now() where event_type = 'needs_price' and processed_at is null and household_id = '…';
+```
+
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and

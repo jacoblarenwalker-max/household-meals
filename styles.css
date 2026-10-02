@@ -496,3 +496,18 @@ label.check-line input[type=checkbox] { width: 22px; height: 22px; min-height: 0
 .weekly-done { display: flex; align-items: center; gap: 6px; margin: 0; padding: 8px 14px; color: var(--muted); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; }
 .weekly-done .tick { color: var(--green); font-weight: 800; }
 .remind-actions button.weekly-btn:disabled { opacity: .6; background: var(--sky); color: var(--navy); border-color: var(--sky-edge); }
+
+/* shopping: short name + muted note (tap to show all of it) */
+.item button.inote {
+  display: block; width: 100%; min-height: 0; padding: 0; margin: 1px 0 0; border: 0; border-radius: 0; background: transparent;
+  font-size: .8125rem; font-weight: 400; line-height: 1.4; color: var(--muted); text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; justify-content: flex-start;
+}
+.item button.inote:hover { background: transparent; color: var(--ink); }
+.item button.inote:active:not(:disabled) { transform: none; }
+.item button.inote.open { white-space: normal; }
+.item.done button.inote { color: var(--faint); }
+/* no verified price yet: muted stand-in where the price tag goes */
+.price-status { flex: none; font-size: .75rem; font-weight: 600; color: var(--faint); border: 1px dashed var(--line-strong); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
+.price-status.pending { color: var(--muted); border-color: var(--tan); }
+.staple-meta .price-status { font-size: .6875rem; }

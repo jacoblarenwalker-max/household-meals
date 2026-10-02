@@ -722,6 +722,7 @@ async function renderShop() {
     return content.replaceChildren(h('div', { class: 'card stack center' }, h('h2', null, 'No list for this week'),
       h('p', { class: 'muted' }, 'A shopping list appears once the meal bot plans this week.')), checkNowCard(null));
   }
+  const pendingLoad = loadPendingPrices().catch(() => {});
   const [{ data: items, error: e2 }, { data: meals }, { data: weeklyStaples }] = await Promise.all([
     sb.from('shopping_list_items').select('*').eq('week_id', week.id).order('position').order('name'),
     sb.from('meal_plan_items').select('id, date, meal_type, title, ingredients').eq('week_id', week.id),
@@ -729,6 +730,7 @@ async function renderShop() {
     sb.from('staples').select('*').eq('household_id', S.household.id).eq('is_weekly', true).order('position').order('name'),
   ]);
   if (e2) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(e2)));
+  await pendingLoad;
   const mealById = Object.fromEntries((meals || []).map((m) => [m.id, m]));
   if (route().view !== 'shop' || ws !== S.weekStart) return;
   const recipeTitle = Object.fromEntries(S.recipes.map((r) => [r.id, r.title]));
@@ -799,13 +801,17 @@ async function renderShop() {
     cb.checked = !!it.checked;
     const link = priced && it.walmart_product_url ? safeUrl(it.walmart_product_url) : null;
     const product = priced ? productName(it.price_source) : null;
+    // the detail (which meals, can size, pantry check) sits under the short name; tap to see all of it
+    const note = it.note && String(it.note).trim() ? h('button', { type: 'button', class: 'inote', 'aria-expanded': 'false', title: it.note }, it.note) : null;
+    if (note) note.addEventListener('click', () => { const open = note.classList.toggle('open'); note.setAttribute('aria-expanded', open ? 'true' : 'false'); });
     const row = h('div', { class: `item${it.checked ? ' done' : ''}` }, cb,
       h('div', { class: 'grow' },
         h('div', { class: 'name' }, it.name, qty ? h('span', { class: 'muted small' }, ` · ${qty}`) : null),
+        note,
         sourceLabel(it, recipeTitle, mealById),
         priced ? h('div', { class: 'pricesrc', title: it.price_source + (it.price_verified_at ? ` · checked ${fmtTs(it.price_verified_at)}` : '') },
           link ? h('a', { href: link, target: '_blank', rel: 'noopener noreferrer' }, product) : product) : null),
-      priced ? h('span', { class: 'price', 'aria-label': `Price ${money(it.price_cents)}` }, money(it.price_cents)) : null,
+      priced ? h('span', { class: 'price', 'aria-label': `Price ${money(it.price_cents)}` }, money(it.price_cents)) : priceStatus('shopping_list_items', it.id),
       h('button', { class: 'ghost', 'aria-label': `Remove ${it.name}`, onclick: async () => {
         if (!confirm(`Remove “${it.name}” from the list?`)) return;
         const { error } = await sb.from('shopping_list_items').delete().eq('id', it.id);
@@ -841,7 +847,8 @@ async function renderShop() {
     addBtn.disabled = false;
     if (error) return toast(friendlyError(error), true);
     items.push(data); name.value = ''; qty.value = ''; unit.value = '';
-    draw(); drawTotals(); toast('Added.');
+    await requestPrices(rowPriceRefs([data]), week.id);
+    draw(); drawTotals(); toast(hasPrice(data) ? 'Added.' : 'Added. The meal bot will look up its Walmart price.');
   } },
   h('h2', null, 'Add an item'), h('label', null, 'Item', name), h('div', { class: 'grid2' }, qty, unit), cat, catList, addBtn,
   h('p', { class: 'small muted' }, 'Snacks, drinks and basics live in the Staples tab, so you can add them every week in one tap.'));
@@ -856,6 +863,37 @@ async function renderShop() {
     h('div', { class: 'row spread' }, h('div', null, h('strong', null, store), ' ', counter), hideBtn),
     listWrap, addForm, checkNowCard(week),
     h('p', { class: 'small muted center' }, 'Only items with a verified price and source count toward the budget. Prices are walmart.com online prices (no store selected), so the Rexburg store’s shelf price may differ a little.'));
+}
+
+/* ---------------- pricing requests ---------------- */
+// The browser can't look up Walmart prices, so anything added without a verified price writes a
+// needs_price app_event (like Check now); the meal bot prices it (lowest-cost matching walmart.com
+// product, no store selected) and marks the event processed. Refs: {table, id, index?, name}.
+const pendingPrice = new Set();
+const priceKey = (table, id, index) => `${table}:${id}:${index ?? ''}`;
+async function loadPendingPrices() {
+  const since = new Date(Date.now() - 14 * 864e5).toISOString();
+  const { data, error } = await sb.from('app_events').select('payload').eq('household_id', S.household.id).eq('event_type', 'needs_price')
+    .is('processed_at', null).gte('created_at', since).order('created_at', { ascending: false }).limit(100);
+  if (error) return;
+  for (const e of data || []) for (const r of (Array.isArray(e.payload?.items) ? e.payload.items : [])) if (r?.table && r?.id) pendingPrice.add(priceKey(r.table, r.id, r.index));
+}
+async function requestPrices(refs, weekId = null) {
+  const items = refs.filter((r) => r && r.table && r.id).map((r) => ({ table: r.table, id: r.id, ...(r.index != null ? { index: r.index } : {}), name: String(r.name || '').slice(0, 200) }));
+  if (!items.length || !S.household) return;
+  for (const r of items) pendingPrice.add(priceKey(r.table, r.id, r.index));
+  const { error } = await sb.from('app_events').insert({
+    household_id: S.household.id, week_id: weekId, event_type: 'needs_price',
+    payload: { items, week_start: S.weekStart, requested_by_member_id: S.member?.id || null, requested_by: S.member?.display_name || null, source: 'web_app',
+      wanted: 'lowest-cost matching walmart.com product, no store selected (usually Great Value), sensible size for 2 people' },
+  });
+  if (error) for (const r of items) pendingPrice.delete(priceKey(r.table, r.id, r.index)); // shows as "Unpriced" instead
+}
+const rowPriceRefs = (rows) => rows.filter((r) => r && !hasPrice(r)).map((r) => ({ table: 'shopping_list_items', id: r.id, name: r.name }));
+// muted stand-in for a price: "Pricing…" once a needs_price request is waiting, otherwise "Unpriced"
+function priceStatus(table, id, index) {
+  const asked = pendingPrice.has(priceKey(table, id, index));
+  return h('span', { class: `price-status${asked ? ' pending' : ''}`, title: asked ? 'Waiting for the meal bot to look up the Walmart price' : 'No verified Walmart price yet' }, asked ? 'Pricing…' : 'Unpriced');
 }
 
 /* ---------------- shared list helpers ---------------- */
@@ -899,6 +937,7 @@ async function addToList(weekId, rows, existing) {
   const { data, error } = await sb.from('shopping_list_items').insert(payload).select();
   if (error) throw error;
   existing.push(...(data || []));
+  await requestPrices(rowPriceRefs(data || []), weekId);
   return { added: data || [], skipped };
 }
 function listResultText({ added, skipped }) {
@@ -945,10 +984,14 @@ async function addStaplesToList(weekId, list, items, { weekly = false, onChange 
 const CAT_CLASS = { produce: 'produce', meat: 'meat', dairy: 'dairy', bakery: 'bakery', pantry: 'pantry', spices: 'spices', frozen: 'frozen', 'breakfast basics': 'breakfast', snacks: 'snacks', drinks: 'drinks', household: 'household' };
 const catClass = (k) => `cat-${CAT_CLASS[norm(k)] || 'other'}`;
 // "walmart.com online price, <product>, <url>, checked …" → "<product>"
+// "walmart.com online price, no store selected, lowest-cost option: Great Value X, 16 oz, https://…, checked …" -> "Great Value X, 16 oz"
 function productName(src) {
-  const s = String(src || '');
-  const m = s.match(/^walmart\.com online price,\s*(.+?),\s*https?:\/\//i);
-  return m ? m[1] : s;
+  let s = String(src || '').trim();
+  if (!/^walmart\.com online price\b/i.test(s)) return s;
+  s = s.replace(/^walmart\.com online price,?\s*/i, '').replace(/^no store selected,?\s*/i, '').replace(/^lowest[- ]cost option:?\s*/i, '');
+  s = s.split(/,\s*https?:\/\//i)[0].split(/,\s*checked \d{4}-/i)[0].split(/\s+(?:—|–|-)\s+OUT OF STOCK/i)[0].replace(/[,;\s]+$/, '');
+  if (/^checked\b/i.test(s)) s = '';
+  return s || 'walmart.com online price';
 }
 
 function sourceLabel(it, recipeTitle, mealById) {
@@ -1090,7 +1133,9 @@ async function syncPresetItems(week, meals, items) {
       const k = ingKey(name, unit);
       const q = ing.quantity === '' || ing.quantity == null ? null : Number(ing.quantity);
       let w = want.get(k);
-      if (!w) { w = { name, unit, category: ing.category || guessCategory(name), quantity: null, source: m.meal_type }; want.set(k, w); }
+      if (!w) { w = { name, unit, category: ing.category || guessCategory(name), quantity: null, source: m.meal_type, price: null }; want.set(k, w); }
+      // a priced ingredient (preset / bot) carries its Walmart package price onto the list row
+      if (!w.price && hasPrice(ing)) w.price = { price_cents: ing.price_cents, price_source: ing.price_source, price_verified_at: ing.price_verified_at || null, walmart_product_url: ing.walmart_product_url || null };
       if (Number.isFinite(q)) w.quantity = Math.round(((w.quantity || 0) + q) * 100) / 100;
       if (m.meal_type === 'breakfast') w.source = 'breakfast';
     }
@@ -1127,11 +1172,12 @@ async function syncPresetItems(week, meals, items) {
   let added = [];
   if (inserts.length) {
     let pos = items.reduce((m, i) => Math.max(m, i.position || 0), 0);
-    const payload = inserts.map((w) => ({ week_id: week.id, name: w.name, quantity: w.quantity, unit: w.unit, category: w.category, store: storeName(), position: ++pos, source: w.source, preset_generated: true }));
+    const payload = inserts.map((w) => ({ week_id: week.id, name: w.name, quantity: w.quantity, unit: w.unit, category: w.category, store: storeName(), position: ++pos, source: w.source, preset_generated: true, ...(w.price || {}) }));
     const { data, error } = await sb.from('shopping_list_items').insert(payload).select();
     if (error) throw error;
     added = data || [];
     items.push(...added);
+    await requestPrices(rowPriceRefs(added), week.id);
   }
   return { added: added.length, updated: updates.length, removed: deletes.length, skipped };
 }
@@ -1231,8 +1277,10 @@ async function renderStaples() {
   mount(topbar('Staples', weekPicker(renderStaples)), content, tabbar('staples'));
   const ws = S.weekStart;
   const hid = S.household.id;
+  const pendingLoad = loadPendingPrices().catch(() => {});
   const [st, wk] = await Promise.all([
     sb.from('staples').select('*').eq('household_id', hid).order('position').order('name'),
+    
     sb.from('weeks').select('id, status').eq('household_id', hid).eq('week_start', ws).maybeSingle(),
   ]);
   if (route().view !== 'staples' || ws !== S.weekStart) return;
@@ -1245,6 +1293,7 @@ async function renderStaples() {
     if (r.error) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(r.error)));
     items.push(...(r.data || []));
   }
+  await pendingLoad;
   if (route().view !== 'staples' || ws !== S.weekStart) return;
 
   let editingId = null;
@@ -1299,7 +1348,8 @@ async function renderStaples() {
       save.disabled = false;
       if (error) return toast(error.code === '23505' ? 'That staple is already on your list.' : friendlyError(error), true);
       if (s) Object.assign(s, data); else staples.push(data);
-      toast(s ? 'Saved.' : 'Staple added.');
+      if (!hasPrice(data)) await requestPrices([{ table: 'staples', id: data.id, name: data.name }], week?.id || null);
+      toast(s ? 'Saved.' : hasPrice(data) ? 'Staple added.' : 'Staple added. The meal bot will look up its Walmart price.');
       onDone();
     } },
     s ? h('div', { class: 'mlabel' }, 'Edit staple') : h('h2', null, 'Add a staple'),
@@ -1351,7 +1401,8 @@ async function renderStaples() {
     return h('div', { class: `item staple${s.active ? '' : ' inactive'}${s.is_weekly ? ' weekly' : ''}` }, cb,
       h('div', { class: 'grow' }, h('div', { class: 'name' }, s.name),
         h('div', { class: 'staple-meta' }, onChip || addBtn, s.is_weekly ? h('span', { class: 'chip weekly' }, 'Weekly') : null,
-          info ? h('span', { class: 'small muted' }, info) : null)),
+          info ? h('span', { class: 'small muted' }, info) : null,
+          hasPrice(s) ? null : priceStatus('staples', s.id))),
       h('div', { class: 'side' },
         star,
         h('button', { class: 'ghost', 'aria-label': `Edit ${s.name}`, onclick: () => { editingId = s.id; draw(); } }, 'Edit')));
@@ -1567,7 +1618,12 @@ function renderPresetForm(arg, back) {
     name.addEventListener('change', () => { if (!ing.category && cat.value === 'Other') cat.value = guessCategory(name.value); });
     const el = h('div', { class: 'ing-row' }, name, h('div', { class: 'ing-grid' }, qty, unit, cat,
       h('button', { type: 'button', class: 'ghost', 'aria-label': 'Remove ingredient', onclick: () => { el.remove(); if (!rowsWrap.children.length) rowsWrap.append(ingRow()); } }, '✕')));
-    el._read = () => ({ name: name.value.trim(), quantity: qty.value === '' ? null : Number(qty.value), unit: unit.value.trim() || null, category: cat.value });
+    el._read = () => {
+      const out = { name: name.value.trim(), quantity: qty.value === '' ? null : Number(qty.value), unit: unit.value.trim() || null, category: cat.value };
+      // a verified price stays with the ingredient as long as its name is unchanged
+      if (hasPrice(ing) && norm(ing.name) === norm(out.name)) Object.assign(out, { price_cents: ing.price_cents, price_source: ing.price_source, price_verified_at: ing.price_verified_at || null, walmart_product_url: ing.walmart_product_url || null });
+      return out;
+    };
     return el;
   };
   const ings = ingList(p.ingredients);
@@ -1586,9 +1642,10 @@ function renderPresetForm(arg, back) {
     const q = isNew
       ? sb.from('meal_presets').insert({ ...row, household_id: S.household.id, position: S.presets.reduce((m, x) => Math.max(m, x.position || 0), 0) + 1 })
       : sb.from('meal_presets').update(row).eq('id', p.id);
-    const { error } = await q.select().single();
+    const { data: saved, error } = await q.select().single();
     save.disabled = false;
     if (error) { msg.className = 'msg error'; msg.textContent = error.code === '23505' ? 'You already have a preset with that name.' : friendlyError(error); return; }
+    await requestPrices(ingList(saved?.ingredients).map((ing, index) => (hasPrice(ing) ? null : { table: 'meal_presets', id: saved.id, index, name: ing.name })));
     await refreshPresets();
     toast(isNew ? 'Preset saved.' : 'Saved.');
     location.hash = back === '#/week' && isNew ? '#/week' : '#/presets';
