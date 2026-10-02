@@ -1,27 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7FA8F2"/>
-      <stop offset=".55" stop-color="#5A86E4"/>
-      <stop offset="1" stop-color="#3A63C8"/>
-    </linearGradient>
-    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFD98A"/>
-      <stop offset="1" stop-color="#FDB24E"/>
-    </linearGradient>
-    <linearGradient id="bowl" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#E6EDFD"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" fill="url(#bg)"/>
-  <circle cx="440" cy="60" r="190" fill="#FFFFFF" opacity=".08"/>
-  <g transform="translate(256 256) scale(.74) translate(-256 -265)">
-    <g stroke="#FFE2A0" stroke-width="16" stroke-linecap="round"><path d="M256.0 118.0L256.0 90.0"/><path d="M323.8 137.4L338.7 113.7"/><path d="M188.2 137.4L173.3 113.7"/><path d="M369.0 185.9L393.7 172.8"/><path d="M143.0 185.9L118.3 172.8"/></g>
-    <circle cx="256" cy="246" r="100" fill="url(#sun)"/>
-    <path d="M192 180a90 90 0 0 1 64-26" fill="none" stroke="#FFF3D6" stroke-width="14" stroke-linecap="round" opacity=".9"/>
-    <path d="M100 262h312a16 16 0 0 1 16 17c-8 78-70 137-172 137S92 357 84 279a16 16 0 0 1 16-17z" fill="url(#bowl)"/>
-    <rect x="192" y="406" width="128" height="26" rx="13" fill="#FFFFFF"/>
-    <path d="M130 302h252" stroke="#6495ED" stroke-width="12" stroke-linecap="round" opacity=".42"/>
+  <rect width="512" height="512" fill="#4BA3E3"/>
+  <g transform="translate(256 256) scale(.74) translate(-256 -250)">
+    <g stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" fill="none">
+      <path d="M196 176c-16-18 16-34 0-52s16-34 0-50"/>
+      <path d="M256 168c-16-18 16-34 0-52s16-34 0-50"/>
+      <path d="M316 176c-16-18 16-34 0-52s16-34 0-50"/>
+    </g>
+    <path d="M118 270a138 64 0 0 1 276 0z" fill="#F3EBDD"/>
+    <path d="M96 262h320a16 16 0 0 1 16 17c-8 80-72 139-176 139S88 359 80 279a16 16 0 0 1 16-17z" fill="#FFFFFF"/>
+    <rect x="196" y="404" width="120" height="28" rx="14" fill="#FFFFFF"/>
+    <rect x="132" y="300" width="248" height="16" rx="8" fill="#EADFCC"/>
   </g>
 </svg>

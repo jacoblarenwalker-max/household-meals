@@ -13,6 +13,15 @@ backed by a Supabase project.
   voter's vote and comment, and who still needs to vote. You can **Approve** or mark **Needs work** with a comment.
   Voting is disabled once the week is locked. The database decides when a week locks (every voter approves in
   `multi` mode).
+  - **Swap** (under each dinner's date): opens a searchable list of the household's **favorite** dinners
+    (`recipes.is_favorite`), most often / most recently planned first, and one tap puts that recipe in the slot.
+    Swapping is a member edit of `week_slots`, so a database trigger (`week_slots_after_user_change`) reopens the
+    vote: a locked week goes back to voting (the app asks to confirm first), every approve vote for that week is
+    cleared (needs-work comments stay), and the week locks again only when every voter approves (multi mode). The
+    same trigger removes unchecked dinner rows (`source` null or `dinner`) for a recipe no longer in the week and
+    writes a `check_now` app_event (`payload.source = 'dinner_swap'`) so the meal bot rebuilds the dinner part of the
+    list. Breakfast, lunch, staple, manual and preset rows are never touched. Meal bot writes (non-`authenticated`
+    roles) don't fire it.
   - **Breakfast & lunch**: one simple line per day for each (table `meal_plan_items`). Tap a line to pick a saved
     **preset** in one tap (optionally "Fill whole week"), or type something else (free text, optional recipe link and
     ingredient lines). No voting, and editable even when the week is locked. Preset ingredients are per day and are
@@ -29,7 +38,8 @@ backed by a Supabase project.
   category. Add / edit / remove, check the ones you want, then **Add N checked to list** (or **Add** per item). Adds go
   to the selected week's list (Walmart) with `source = 'staple'`, copying the staple's price fields if it has them; a
   staple is never added twice to the same week.
-- **Recipes**: search, add and edit household recipes.
+- **Recipes**: search, add and edit household recipes. Tap the ☆ star on a recipe (or **Add to favorites** on its
+  page or in the Swap picker) to make it a go-to dinner.
 - **Settings**: dinners per week, leftover nights, default plates, approval mode, dietary exclusions, preferred
   stores, **monthly grocery budget** (`households.monthly_budget_cents`, default $350), and a link to
   **Breakfast & lunch presets** (`#/presets`: add/edit/delete presets with per-day ingredients). Also lists members
@@ -38,15 +48,18 @@ backed by a Supabase project.
   The browser never calls any other service.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
-`shopping_list_items_source`, `budget_and_prices`, `meal_presets`).
+`shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`).
 
 Icons: `icon.svg` (any), `icon-maskable.svg`, PNG exports `icon-192.png`, `icon-512.png`, `icon-maskable-192.png`,
 `icon-maskable-512.png` and `apple-touch-icon.png` (180×180), wired into `index.html` and `manifest.webmanifest`.
 
-Design: melon yellow + cornflower blue. Tokens live at the top of `styles.css`: cornflower `#6495ED` with
-`#3A63C8` (buttons) / `#2F55B5` (links, active tab) and tint `#EAF0FD`; melon `#FDBC5F` / `#FFD27A` with tint `#FFF4DE`
-and warm text `#8A5200`; page `#FBFAF7`, white cards, navy ink `#1B2340`, slate `#5A6382`; teal for locked/success,
-coral for over budget, periwinkle dusk for dinner. Breakfast = melon, lunch = cornflower, dinner = dusk; today = melon.
+Design: bold baby blue + clean white, with warm beige as an accent. Flat, solid fills only (no tints, gradients or
+translucency). Tokens live at the top of `styles.css`: baby blue `#4BA3E3` for header bands (top bar, card and aisle
+headers), primary buttons, the active tab, today's date block and the Makes-leftovers pill, always with navy
+`#0F2747` text (5.5:1); deeper blue `#1B5E96` for links and blue text on white; page `#FAFAF8`, white cards
+`#FFFFFF`, borders `#D8D3CA`; beige `#EADFCC` / tan `#DCC9A8` for other date blocks, Leftover pills, price tags and
+dividers; ink `#1C2A3F`, slate `#505B6B`. Green `#2D7D5C` = locked/success, brick `#A8432F` = needs work / over
+budget. Icon: white bowl with a beige mound and white steam on solid baby blue.
 
 ## Security
 

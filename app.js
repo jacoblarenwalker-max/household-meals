@@ -316,7 +316,7 @@ async function renderWeek() {
       h('strong', null, STATUS[st]?.label || st),
       h('div', { class: 'small' }, STATUS[st]?.text || ''),
       st === 'locked' && d.week.locked_at ? h('div', { class: 'small muted' }, `Locked ${fmtTs(d.week.locked_at)}`) : null));
-    parts.push(nightsCard(ws, d.slots));
+    parts.push(nightsCard(ws, d));
     parts.push(votesCard(d));
   }
   parts.push(smallMealsCard(ws, d));
@@ -330,37 +330,149 @@ function dayBadge(date) {
   return h('div', { class: `day wd${wd}` }, h('div', { class: 'dow' }, fmtD(date, { weekday: 'short' })), h('div', { class: 'dom' }, fmtD(date, { day: 'numeric' })));
 }
 
-function nightsCard(ws, slots) {
-  const byId = Object.fromEntries(slots.map((s) => [s.id, s]));
+function nightsCard(ws, d) {
+  const slots = d.slots;
   const today = todayISO();
-  const rows = [];
-  for (let i = 0; i < 7; i++) {
-    const date = addDays(ws, i);
-    const daySlots = slots.filter((s) => s.date === date);
-    const dayCol = dayBadge(date);
-    if (!daySlots.length) {
-      rows.push(h('div', { class: `night empty${date === today ? ' today' : ''}` }, dayCol, h('div', null, h('div', { class: 'title' }, 'Nothing planned'))));
-      continue;
+  const card = h('section', { class: 'card tint-dinner', id: 'dinners' });
+  const head = h('div', { class: 'card-head' }, h('h2', null, 'Dinners'));
+  let picking = null; // slot id with the favorites picker open
+  const draw = () => {
+    const byId = Object.fromEntries(slots.map((s) => [s.id, s]));
+    const rows = [];
+    for (let i = 0; i < 7; i++) {
+      const date = addDays(ws, i);
+      const daySlots = slots.filter((s) => s.date === date);
+      const dayCol = dayBadge(date);
+      let pickerEl = null;
+      const swaps = [];
+      if (!daySlots.length) {
+        rows.push(h('div', { class: `night empty${date === today ? ' today' : ''}` }, dayCol, h('div', null, h('div', { class: 'title' }, 'Nothing planned'))));
+        continue;
+      }
+      const body = daySlots.map((s) => {
+        const from = s.leftover_from_slot_id ? byId[s.leftover_from_slot_id] : null;
+        const recipe = s.recipe || from?.recipe || null;
+        const url = recipe?.source_url ? safeUrl(recipe.source_url) : null;
+        const title = recipe ? (url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', title: recipe.source_name ? `Open on ${recipe.source_name}` : null }, recipe.title) : recipe.title)
+          : (s.is_leftover_night ? 'Leftovers' : 'Dinner TBD');
+        // one clean secondary line: a single solid pill when it matters, then the plate count
+        const pill = s.is_leftover_night ? h('span', { class: 'chip left' }, from ? `Leftovers from ${fmtD(from.date, { weekday: 'long' })}` : 'Leftover night')
+          : s.makes_leftovers ? h('span', { class: 'chip makes' }, 'Makes leftovers') : null;
+        const open = picking === s.id;
+        const swap = h('button', {
+          type: 'button', class: `ghost swap${open ? ' on' : ''}`, 'aria-expanded': open ? 'true' : 'false',
+          'aria-label': `Swap ${fmtD(s.date, { weekday: 'long' })}’s dinner for a favorite`,
+          onclick: () => { picking = open ? null : s.id; draw(); if (!open) card.querySelector('.dpicker input, .dpicker button')?.focus(); },
+        }, 'Swap');
+        swaps.push(swap);
+        if (open) pickerEl = dinnerPicker(d, s, recipe, () => { picking = null; draw(); });
+        return h('div', { class: 'stack', style: null },
+          h('div', { class: 'title' }, title),
+          h('div', { class: 'meta' }, pill, h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)),
+          s.notes ? h('div', { class: 'note' }, s.notes) : null);
+      });
+      rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, h('div', { class: 'daycol' }, dayCol, swaps), h('div', { class: 'stack' }, body), pickerEl));
+      pickerEl = null;
     }
-    const body = daySlots.map((s) => {
-      const from = s.leftover_from_slot_id ? byId[s.leftover_from_slot_id] : null;
-      const recipe = s.recipe || from?.recipe || null;
-      const url = recipe?.source_url ? safeUrl(recipe.source_url) : null;
-      const title = recipe ? (url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, recipe.title) : recipe.title)
-        : (s.is_leftover_night ? 'Leftovers' : 'Dinner TBD');
-      return h('div', { class: 'stack', style: null },
-        h('div', { class: 'title' }, title),
-        h('div', { class: 'meta' },
-          s.is_leftover_night ? h('span', { class: 'chip left' }, 'Leftover night') : null,
-          s.makes_leftovers ? h('span', { class: 'chip makes' }, 'Makes leftovers') : null,
-          h('span', { class: 'small muted' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`),
-          recipe?.source_name ? h('span', { class: 'small muted' }, `· ${recipe.source_name}`) : null,
-          from ? h('span', { class: 'small muted' }, `· from ${fmtD(from.date, { weekday: 'long' })}`) : null),
-        s.notes ? h('div', { class: 'small muted' }, s.notes) : null);
-    });
-    rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, dayCol, h('div', { class: 'stack' }, body)));
-  }
-  return h('section', { class: 'card tint-dinner' }, h('div', { class: 'card-head' }, h('h2', null, h('span', { class: 'meal-dot dinner', 'aria-hidden': 'true' }), 'Dinners')), rows);
+    card.replaceChildren(head, ...rows);
+  };
+  draw();
+  return card;
+}
+
+/* ---------------- favorites (go-to dinners) ---------------- */
+async function toggleFavorite(r, btn) {
+  const rec = S.recipes.find((x) => x.id === r.id) || r;
+  const next = !rec.is_favorite;
+  if (btn) btn.disabled = true;
+  const { data, error } = await sb.from('recipes').update({ is_favorite: next }).eq('id', rec.id).select('id, is_favorite');
+  if (btn) btn.disabled = false;
+  if (error) { toast(friendlyError(error), true); return false; }
+  if (!data?.length) { toast('Couldn’t update favorites. You may not have access to this recipe.', true); return false; }
+  rec.is_favorite = next; r.is_favorite = next;
+  toast(next ? `★ ${rec.title} is now a favorite.` : `${rec.title} removed from favorites.`);
+  return true;
+}
+function starButton(r, onChange) {
+  const label = () => (r.is_favorite ? `Remove ${r.title} from favorites` : `Add ${r.title} to favorites`);
+  const btn = h('button', { type: 'button', class: `star${r.is_favorite ? ' on' : ''}`, 'aria-pressed': r.is_favorite ? 'true' : 'false', 'aria-label': label(), title: r.is_favorite ? 'Favorite' : 'Add to favorites' }, r.is_favorite ? '★' : '☆');
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!(await toggleFavorite(r, btn))) return;
+    btn.className = `star${r.is_favorite ? ' on' : ''}`; btn.textContent = r.is_favorite ? '★' : '☆';
+    btn.setAttribute('aria-pressed', r.is_favorite ? 'true' : 'false'); btn.setAttribute('aria-label', label());
+    btn.title = r.is_favorite ? 'Favorite' : 'Add to favorites';
+    onChange?.();
+  });
+  return btn;
+}
+// how often / how recently each recipe was planned (RLS limits this to the household's own weeks)
+async function recipeUsage(ids) {
+  if (!ids.length) return {};
+  const { data, error } = await sb.from('week_slots').select('recipe_id, date').in('recipe_id', ids).lte('date', todayISO());
+  if (error || !data) return {};
+  const u = {};
+  for (const r of data) { const x = (u[r.recipe_id] ||= { n: 0, last: '' }); x.n++; if (r.date > x.last) x.last = r.date; }
+  return u;
+}
+
+// inline picker on a dinner slot: favorites only, most used first, one tap to swap
+function dinnerPicker(d, slot, current, close) {
+  const dayName = fmtD(slot.date, { weekday: 'long' });
+  const cur = current ? S.recipes.find((r) => r.id === current.id) || null : null;
+  const q = h('input', { type: 'search', placeholder: 'Search favorites', 'aria-label': 'Search favorite dinners', enterkeyhint: 'search' });
+  const list = h('div', { class: 'dlist' });
+  const curRow = h('div', { class: 'dcur' });
+  let usage = {};
+  const busy = (on) => wrap.querySelectorAll('button').forEach((b) => { b.disabled = on; });
+  const pick = async (r) => {
+    if (cur && r.id === cur.id && !slot.is_leftover_night) { close(); return; }
+    if (d.week.status === 'locked' && !confirm(`This week is locked. Swapping ${dayName}’s dinner reopens voting, so everyone has to approve the plan again. Swap to “${r.title}”?`)) return;
+    busy(true);
+    const { data, error } = await sb.from('week_slots').update({ recipe_id: r.id, is_leftover_night: false, leftover_from_slot_id: null }).eq('id', slot.id).select('id');
+    if (error) { busy(false); return toast(friendlyError(error), true); }
+    if (!data?.length) { busy(false); return toast('Couldn’t swap that dinner. You may not have access to this week.', true); }
+    toast(`${dayName}: ${r.title}. ${d.week.status === 'draft' ? '' : 'Approvals were reset. '}The shopping list updates when the meal bot checks.`);
+    await refreshWeeks();
+    renderWeek();
+  };
+  const drawCur = () => {
+    curRow.replaceChildren();
+    if (!cur) return;
+    curRow.append(h('span', { class: 'small muted grow' }, 'Now: ', h('strong', null, cur.title)),
+      h('button', { type: 'button', class: `ghost fav-toggle${cur.is_favorite ? ' on' : ''}`, onclick: async (e) => { if (await toggleFavorite(cur, e.currentTarget)) { drawCur(); drawList(); } } },
+        cur.is_favorite ? '★ Favorite' : '☆ Add to favorites'));
+  };
+  const usageText = (r) => { const u = usage[r.id]; return u ? `Made ${u.n} time${u.n === 1 ? '' : 's'}, last ${fmtD(u.last, { month: 'short', day: 'numeric' })}` : 'Not planned yet'; };
+  const drawList = () => {
+    const favs = S.recipes.filter((r) => r.is_favorite);
+    q.parentElement && (q.parentElement.hidden = favs.length < 2);
+    if (!favs.length) {
+      list.replaceChildren(h('div', { class: 'empty-presets' },
+        h('p', { class: 'small muted' }, `No favorites yet. Tap the ☆ star on a recipe in the Recipes tab${cur ? ' (or “Add to favorites” above)' : ''} and your go-to dinners show up here for one-tap swaps.`),
+        h('a', { class: 'btn small-btn', href: '#/recipes' }, 'Go to Recipes')));
+      return;
+    }
+    const term = q.value.trim().toLowerCase();
+    const rs = favs.filter((r) => !term || [r.title, ...(r.tags || [])].join(' ').toLowerCase().includes(term))
+      .sort((a, b) => (usage[b.id]?.n || 0) - (usage[a.id]?.n || 0) || (usage[b.id]?.last || '').localeCompare(usage[a.id]?.last || '') || a.title.localeCompare(b.title));
+    list.replaceChildren(...(rs.length ? rs.map((r) => {
+      const on = cur?.id === r.id && !slot.is_leftover_night;
+      return h('button', { type: 'button', class: `pchip drow${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false', onclick: () => pick(r) },
+        h('span', { class: 'pt' }, r.title), h('span', { class: 'pm' }, usageText(r)));
+    }) : [h('p', { class: 'small muted' }, 'No favorites match.')]));
+  };
+  q.addEventListener('input', drawList);
+  const wrap = h('div', { class: 'picker dinner dpicker', role: 'group', 'aria-label': `Pick a favorite dinner for ${dayName}` },
+    h('div', { class: 'row spread' }, h('div', { class: 'mlabel' }, `Favorite dinners · ${dayName}`), h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close picker' }, '✕')),
+    curRow,
+    h('div', { class: 'dsearch' }, q),
+    list,
+    d.week.status === 'locked' ? h('p', { class: 'small muted' }, 'This week is locked. A swap reopens voting.') : d.week.status !== 'draft' ? h('p', { class: 'small muted' }, 'A swap resets approvals, so everyone approves the new plan.') : null);
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  drawCur(); drawList();
+  recipeUsage(S.recipes.filter((r) => r.is_favorite).map((r) => r.id)).then((u) => { usage = u; if (wrap.isConnected) drawList(); });
+  return wrap;
 }
 
 function votesCard({ week, slots, votes }) {
@@ -661,7 +773,7 @@ async function createWeek(ws) {
 
 function smallMealsCard(ws, d) {
   const card = h('section', { class: 'card tint-meals', id: 'meals' });
-  const head = h('div', { class: 'card-head' }, h('h2', null, h('span', { class: 'meal-dot breakfast', 'aria-hidden': 'true' }), h('span', { class: 'meal-dot lunch', 'aria-hidden': 'true' }), 'Breakfast & lunch'),
+  const head = h('div', { class: 'card-head' }, h('h2', null, 'Breakfast & lunch'),
     h('p', { class: 'small muted' }, 'Tap a day to pick a saved breakfast or lunch. Ingredients go straight to the shopping list. No voting needed.'));
   if (!d.week) {
     const start = h('button', { class: 'block' }, 'Start planning this week');
@@ -1052,10 +1164,12 @@ function renderRecipes() {
     const rs = S.recipes.filter((r) => !term || [r.title, r.source_name, ...(r.tags || [])].join(' ').toLowerCase().includes(term));
     list.replaceChildren(...(rs.length ? rs.map((r) => {
       const mins = (r.prep_minutes || 0) + (r.cook_minutes || 0);
-      return h('a', { class: 'card recipe-card', href: `#/recipes/${encodeURIComponent(r.id)}` },
-        h('div', { class: 'title' }, r.title),
-        h('div', { class: 'small muted' }, [r.source_name, mins ? `${mins} min` : null, r.servings ? `serves ${r.servings}` : null].filter(Boolean).join(' · ')),
-        r.tags?.length ? h('div', { class: 'row wrap', style: null }, r.tags.map((t) => h('span', { class: 'chip tag' }, t))) : null);
+      return h('div', { class: 'recipe-item' },
+        h('a', { class: 'card recipe-card', href: `#/recipes/${encodeURIComponent(r.id)}` },
+          h('div', { class: 'title' }, r.title),
+          h('div', { class: 'small muted' }, [r.source_name, mins ? `${mins} min` : null, r.servings ? `serves ${r.servings}` : null].filter(Boolean).join(' · ')),
+          r.tags?.length ? h('div', { class: 'row wrap', style: null }, r.tags.map((t) => h('span', { class: 'chip tag' }, t))) : null),
+        starButton(r));
     }) : [h('div', { class: 'card muted center' }, S.recipes.length ? 'No recipes match.' : 'No recipes yet. Add your favorites!')]));
   };
   q.addEventListener('input', draw);
@@ -1092,6 +1206,12 @@ function renderRecipeForm(id) {
   const msg = h('div', { class: 'hidden' });
   const save = h('button', { type: 'submit', class: 'block' }, isNew ? 'Add recipe' : 'Save changes');
   const url = safeUrl(r.source_url || '');
+  const favText = () => (r.is_favorite ? '★ Favorite' : '☆ Add to favorites');
+  const favToggle = h('button', { type: 'button', class: `ghost fav-toggle${r.is_favorite ? ' on' : ''}`, 'aria-pressed': r.is_favorite ? 'true' : 'false' }, favText());
+  favToggle.addEventListener('click', async () => {
+    if (!(await toggleFavorite(r, favToggle))) return;
+    favToggle.textContent = favText(); favToggle.className = `ghost fav-toggle${r.is_favorite ? ' on' : ''}`; favToggle.setAttribute('aria-pressed', r.is_favorite ? 'true' : 'false');
+  });
   const form = h('form', { class: 'card stack', onsubmit: async (e) => {
     e.preventDefault();
     const srcUrl = f.source_url.value.trim();
@@ -1132,7 +1252,8 @@ function renderRecipeForm(id) {
   save);
   mount(topbar(isNew ? 'New recipe' : 'Edit recipe'),
     h('div', { class: 'content' },
-      h('div', { class: 'row spread' }, h('a', { href: '#/recipes' }, '← All recipes'), url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open original ↗') : null),
+      h('div', { class: 'row spread' }, h('a', { href: '#/recipes' }, '← All recipes'),
+        h('div', { class: 'row' }, !isNew ? favToggle : null, url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open original ↗') : null)),
       form),
     tabbar('recipes'));
 }
@@ -1145,7 +1266,7 @@ function renderPresets(arg) {
   const section = (type, label) => {
     const list = presetsOf(type);
     return h('section', { class: `card stack preset-group ${type}` },
-      h('div', { class: 'row spread' }, h('h2', null, h('span', { class: `meal-dot ${type}`, 'aria-hidden': 'true' }), `${label}s`),
+      h('div', { class: 'row spread' }, h('h2', null, `${label}s`),
         list.length ? h('a', { class: 'btn small-btn', href: `#/presets/new-${type}` }, `+ Add ${label.toLowerCase()}`) : null),
       list.length
         ? list.map((p) => {
