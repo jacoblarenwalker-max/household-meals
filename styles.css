@@ -77,7 +77,7 @@ strong { font-weight: 650; }
 .topbar .muted { color: var(--navy); }
 .topbar > .row:first-child::after {
   content: ""; flex: none; width: 44px; height: 44px; border-radius: 13px; align-self: flex-start; margin-top: 2px;
-  background: url(icon.svg) center / cover no-repeat;
+  background: url(icon.svg?v=js1) center / cover no-repeat;
   box-shadow: 0 0 0 2px var(--surface);
 }
 .topbar h1 { display: flex; align-items: center; gap: 10px; }

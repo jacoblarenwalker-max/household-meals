@@ -10,8 +10,8 @@ self.addEventListener('push', (event) => {
     body: d.body || '',
     tag: d.tag || undefined,
     renotify: !!d.tag,
-    icon: 'icon-192.png',
-    badge: 'icon-192.png',
+    icon: 'icon-192.png?v=js1',
+    badge: 'icon-192.png?v=js1',
     data: { url: d.url || './#/week' },
   }));
 });

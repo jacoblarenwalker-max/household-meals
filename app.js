@@ -277,14 +277,14 @@ function renderAuth(notice) {
   btn,
   isUp ? h('p', { class: 'small muted' }, 'Use the email address your household invite was sent to, so your account links up automatically.') : null);
   mount(h('main', { class: 'auth' },
-    h('div', { class: 'hero' }, h('img', { src: 'icon.svg', alt: '' }), h('h1', null, 'Household Meals'), h('p', { class: 'muted' }, 'Plan meals together, vote on dinners, and shop.')),
+    h('div', { class: 'hero' }, h('img', { src: 'icon.svg?v=js1', alt: '' }), h('h1', null, 'Household Meals'), h('p', { class: 'muted' }, 'Plan meals together, vote on dinners, and shop.')),
     form));
 }
 
 function renderUnlinked() {
   const email = S.session.user.email;
   mount(h('main', { class: 'auth' },
-    h('div', { class: 'hero' }, h('img', { src: 'icon.svg', alt: '' }), h('h1', null, 'Almost there')),
+    h('div', { class: 'hero' }, h('img', { src: 'icon.svg?v=js1', alt: '' }), h('h1', null, 'Almost there')),
     h('div', { class: 'card stack' },
       h('p', null, 'You’re signed in as ', h('strong', null, email), ', but this account isn’t linked to a household yet.'),
       h('p', { class: 'muted small' }, 'Accounts link automatically when the email matches a household invite. Ask the household owner to add this exact email address as a member, then tap “Check again”.'),

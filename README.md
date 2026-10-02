@@ -69,8 +69,12 @@ Schema changes are in `supabase/migrations/` (applied to the project as `add_sta
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
 `push_and_descriptions`, `recipe_descriptions`).
 
-Icons: `icon.svg` (any), `icon-maskable.svg`, PNG exports `icon-192.png`, `icon-512.png`, `icon-maskable-192.png`,
-`icon-maskable-512.png` and `apple-touch-icon.png` (180×180), wired into `index.html` and `manifest.webmanifest`.
+Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
+`icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and
+`icon-maskable.svg` (full-bleed, art inside the Android safe zone), with PNG exports `icon-192.png`, `icon-512.png`,
+`icon-maskable-192.png`, `icon-maskable-512.png` and `favicon-32.png`. Letters are outlined paths (no font needed).
+Every reference in `index.html`, `manifest.webmanifest`, `styles.css`, `app.js` and `sw.js` carries `?v=js1`; bump
+it when the icon changes so phones fetch the new one. On iPhone, remove the old Home Screen icon and add it again.
 
 Design: bold baby blue + clean white, with warm beige as an accent. Flat, solid fills only (no tints, gradients or
 translucency). Tokens live at the top of `styles.css`: baby blue `#4BA3E3` for header bands (top bar, card and aisle
@@ -78,7 +82,7 @@ headers), primary buttons, the active tab, today's date block and the Makes-left
 `#0F2747` text (5.5:1); deeper blue `#1B5E96` for links and blue text on white; page `#FAFAF8`, white cards
 `#FFFFFF`, borders `#D8D3CA`; beige `#EADFCC` / tan `#DCC9A8` for other date blocks, Leftover pills, price tags and
 dividers; ink `#1C2A3F`, slate `#505B6B`. Green `#2D7D5C` = locked/success, brick `#A8432F` = needs work / over
-budget. Icon: white bowl with a beige mound and white steam on solid baby blue.
+budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 ## Security
 
