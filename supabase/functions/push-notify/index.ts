@@ -1,6 +1,7 @@
 // push-notify: sends Web Push notifications to household members.
 // Callers:
 //   * the database (pg_net trigger on app_events) with header x-push-secret -> { event_id }
+//     (swap / needs_work / week_locked, and the Sunday 8 PM vote_reminder written by pg_cron)
 //   * a signed-in app user (Authorization: Bearer <user JWT>) -> { action: 'test' } sends to their own devices only
 // Secrets (VAPID private key, webhook secret) live in Supabase Vault; nothing secret is in the repo.
 import postgres from 'npm:postgres@3.4.5';
@@ -82,9 +83,11 @@ async function notifyEvent(eventId: string) {
   if (!ev) return { status: 404, body: { error: 'event not found' } };
   const p = (ev.payload || {}) as Record<string, any>;
   const isSwap = ev.event_type === 'check_now' && p.source === 'dinner_swap';
-  if (!isSwap && ev.event_type !== 'week_locked' && ev.event_type !== 'needs_work') return { status: 200, body: { skipped: 'not a notifying event' } };
+  const isReminder = ev.event_type === 'vote_reminder';
+  if (!isSwap && !isReminder && ev.event_type !== 'week_locked' && ev.event_type !== 'needs_work') return { status: 200, body: { skipped: 'not a notifying event' } };
   const claimed = await sql`insert into public.push_notified_events (event_id, event_type) values (${ev.id}, ${ev.event_type}) on conflict do nothing returning event_id`;
   if (!claimed.length) return { status: 200, body: { skipped: 'already notified' } };
+  if (isReminder) return { status: 200, body: await notifyReminder(ev, p) };
 
   const weekStart: string = p.week_start || '';
   const url = weekStart ? `./?week=${weekStart}#/week` : './#/week';
@@ -116,6 +119,23 @@ async function notifyEvent(eventId: string) {
   const out = subs.length ? await deliver(subs, { title, body, url, tag: `week-${ev.week_id || 'x'}` }, `week-${String(ev.week_id || 'x').slice(0, 20)}`) : { sent: 0, failed: 0, removed: 0, results: [] };
   await sql`update public.push_notified_events set recipients = ${subs.length}, sent = ${out.sent}, failed = ${out.failed}, removed = ${out.removed} where event_id = ${ev.id}`;
   return { status: 200, body: { event_type: ev.event_type, title, message: body, recipients: subs.length, ...out } };
+}
+
+// Sunday vote reminder (private.send_vote_reminders): the database already chose the recipients
+// (payload.user_ids) and the text; payload.dry_run = true means work out who would get it but send nothing.
+async function notifyReminder(ev: Record<string, any>, p: Record<string, any>) {
+  const dryRun = p.dry_run === true || p.dry_run === 'true';
+  const title = String(p.title || 'Household Meals');
+  const body = String(p.body || '');
+  const url = typeof p.url === 'string' && p.url.startsWith('./') ? p.url : './#/week';
+  const subs = await sql`select s.id, s.endpoint, s.keys from public.push_subscriptions s
+    where s.household_id = ${ev.household_id}
+      and s.user_id in (select (jsonb_array_elements_text(coalesce(e.payload->'user_ids', '[]'::jsonb)))::uuid
+                        from public.app_events e where e.id = ${ev.id})` as unknown as Sub[];
+  const none = { sent: 0, failed: 0, removed: 0, results: [] as unknown[] };
+  const out = !dryRun && subs.length ? await deliver(subs, { title, body, url, tag: `vote-${p.week_start || 'x'}` }, 'vote-reminder') : none;
+  await sql`update public.push_notified_events set recipients = ${subs.length}, sent = ${out.sent}, failed = ${out.failed}, removed = ${out.removed} where event_id = ${ev.id}`;
+  return { event_type: ev.event_type, kind: p.kind, dry_run: dryRun, title, message: body, url, recipients: subs.length, ...(dryRun ? { would_send: subs.length } : {}), ...out };
 }
 
 async function userFromToken(token: string): Promise<string | null> {

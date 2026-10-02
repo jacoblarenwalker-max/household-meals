@@ -87,6 +87,26 @@ backed by a Supabase project.
   **Turn off on this device** unsubscribes and deletes the row (signing out does the same). Notifications go out for:
   a dinner **swap** on a week that isn't a draft (not to the person who swapped), **needs work** (not to the voter),
   and **week locked** (not to the last approver). Tapping one opens `./?week=YYYY-MM-DD#/week`.
+  - **Sunday 8 PM vote reminder** (America/Denver), about the week that starts the next day (Monday):
+    - week is **voting** → only voters who haven't approved get *"Time to vote on next week’s dinners 🍽️"* /
+      *"Tap to review Oct 5–11."*; tapping opens that week (`./?week=2026-10-05#/week`). Nobody left → nothing.
+    - **no week yet** or still a **draft** → every signed-in voter gets *"Next week’s dinners aren’t planned yet"* /
+      *"The plan for Oct 5–11 isn’t ready to vote on yet."* (opens `./#/week`).
+    - **locked** → nothing. **needs_work** → nothing (the bot is revising it; needs_work already notified).
+    - Only members who have signed in (`household_members.user_id` set) and turned notifications on can get it.
+  - How the reminder is scheduled (free: `pg_cron` + the same trigger/Edge Function as above): the cron job
+    `sunday-vote-reminder` runs `select private.send_vote_reminders();` at `0 2,3 * * 1` (UTC). pg_cron uses UTC, and
+    Sunday 8 PM in Denver is Monday 02:00 UTC in MDT (UTC-6) and 03:00 UTC in MST (UTC-7), so it runs at both; the
+    function does nothing unless it is Sunday 20:xx in `America/Denver`, so exactly one run acts and DST is handled
+    without edits. It claims the Sunday in `vote_reminders` (primary key household + Sunday), so a second run can
+    never send a duplicate, then inserts an `app_events` row `vote_reminder` (with `processed_at` already set so the
+    meal bot ignores it, and the recipients/text in `payload`); the trigger hands it to `push-notify`.
+  - Checking it safely (SQL editor):
+    `select private.send_vote_reminders('2026-10-05 02:00+00', 'plan');` shows what that Sunday would send and writes
+    nothing. Mode `'push_dry_run'` does the whole path but marks the event `dry_run`, so `push-notify` only counts
+    devices (`would_send`) and sends nothing; delete that day's `vote_reminders` row and the event afterwards.
+    History: `select * from vote_reminders order by reminder_date desc;` and
+    `select * from cron.job_run_details where jobid = (select jobid from cron.job where jobname = 'sunday-vote-reminder') order by start_time desc;`.
   - iPhone/iPad: needs iOS/iPadOS 16.4+. In Safari, Share → **Add to Home Screen**, open **Meals** from the Home
     Screen, sign in, then Settings → Turn on notifications → Allow. (Safari tabs can't receive web push.)
   - How it's wired: an AFTER INSERT trigger on `app_events` (`private.app_events_push_notify`) calls the Edge Function
@@ -152,7 +172,7 @@ update public.app_events set processed_at = now() where event_type = 'needs_pric
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and
