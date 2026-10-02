@@ -11,13 +11,27 @@ backed by a Supabase project.
 - **This week**: pick a week (weeks start Monday, America/Denver). Each night shows the dinner name, a one-line
   description in muted text (`recipes.description`, skipped on leftover nights), then a leftover pill and the plate
   count. Tap the dinner name for its **Cooking notes** (the bot's `week_slots.notes`: batch size, swaps, what to save
-  for later) with **Open recipe ↗** and **Recipe details** links. Each cooked dinner also gets a small beige **cost tag** (e.g. `$5.18`): the
-  shopping cost of that meal from the week's dinner rows on the list, using only verified prices (`price_cents` +
-  `price_source`). A row with `recipe_id` counts fully toward that recipe; a row shared by several dinners carries
-  `meal_shares` (`[{"recipe_id": …, "share": 0.5}, …]`, fractions of its price) and is split that way. If some of a
-  meal's rows aren't priced the tag reads `~$X+`; leftover nights show no price, so nothing is counted twice; dinner
-  rows not tied to a planned dinner are summed in a small note under the dinners. The meal bot's dinner-list rebuild
-  should set `meal_shares` on the shared rows it writes. The page also shows the week's status (draft / voting / needs work / locked), each
+  for later) with **Open recipe ↗** and **Recipe details** links. Each cooked dinner also gets a small beige **cost tag** (e.g. `$7.59`): what
+  the **amount that meal actually uses** costs, not the whole package (a meal that uses ½ tbsp of honey counts
+  about $0.11 of the $3.72 bottle). It comes from table `meal_ingredient_costs` (one row per week, recipe and
+  ingredient, every ingredient including pantry items like oil, soy sauce, honey, spices and garlic):
+  `cost_cents = package_price_cents ÷ package_size × amount used at the planned batch size`, stored as
+  `used_fraction` (share of the package) and `cost_cents` (fractional cents), plus `amount_used`/`amount_unit`,
+  `package`/`package_size`/`package_unit`, `price_source` and `note`. Prices are verified walmart.com prices (the
+  list row's `price_cents`, or a walmart.com lookup for pantry items not on the list); the package size comes from the
+  product's walmart.com size or the list row and is never guessed. If the size is unknown (e.g. cloves in a garlic
+  bulb) the row counts the full price (split by the list row's `meal_shares` when it's shared), sets
+  `used_fraction = null` and `estimated = true`, and the tag reads `~$X`; a row with no price adds `+`. Because it's
+  its own table (not columns on the list rows), it survives list rebuilds; the meal bot should write these rows
+  (service role; members can only read them) whenever it plans or changes a week's dinners. A muted line under the
+  dinners shows the difference: `Store total $38.98 · meals use ~$22.93` (store total = verified prices of the
+  week's dinner rows, i.e. what you pay at the store; the rest stays in the pantry). Dinners with no
+  `meal_ingredient_costs` rows fall back to whole-package list costs, shown as `~$X`: a dinner row with
+  `recipe_id` counts fully toward that recipe, and a row shared by several dinners carries `meal_shares`
+  (`[{"recipe_id": …, "share": 0.5}, …]`, fractions of its price) and is split that way; shared dinner rows not tied
+  to a planned dinner are then summed in a small note. The shopping list's own prices and totals never change.
+  Leftover nights show no price, so nothing is counted twice. The meal bot's dinner-list rebuild should set
+  `meal_shares` on the shared rows it writes. The page also shows the week's status (draft / voting / needs work / locked), each
   voter's vote and comment, and who still needs to vote. You can **Approve** or mark **Needs work** with a comment.
   Voting is disabled once the week is locked. The database decides when a week locks (every voter approves in
   `multi` mode).
@@ -73,7 +87,7 @@ backed by a Supabase project.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and

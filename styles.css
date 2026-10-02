@@ -227,6 +227,9 @@ textarea { min-height: 96px; resize: vertical; }
 .chip.cost { padding: 2px 8px; border-radius: 6px; font-size: .75rem; font-weight: 750; background: var(--beige); color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .chip.cost.none { font-weight: 600; color: var(--muted); }
 .dinner-foot { margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.dinner-foot p { margin: 0; }
+.dinner-foot p + p { margin-top: 4px; }
+.dinner-total { font-variant-numeric: tabular-nums; }
 .chip.on { background: var(--green); color: #FFFFFF; }
 
 /* week picker (sits on the blue header band) */
