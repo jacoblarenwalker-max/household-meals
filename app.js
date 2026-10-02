@@ -163,6 +163,7 @@ function render() {
   if (!S.member || !S.household) return renderUnlinked();
   const { view, arg } = route();
   if (view === 'shop') return renderShop();
+  if (view === 'staples') return renderStaples();
   if (view === 'recipes') return arg ? renderRecipeForm(arg) : renderRecipes();
   if (view === 'settings') return renderSettings();
   return renderWeek();
@@ -173,6 +174,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const ICONS = {
   week: [['rect', { x: 3.5, y: 5, width: 17, height: 15.5, rx: 3 }], ['path', { d: 'M3.5 10h17M8 3v4M16 3v4' }]],
   shop: [['path', { d: 'M3 4h2.2l2.1 10.1a2 2 0 0 0 2 1.6h7.5a2 2 0 0 0 1.9-1.4L20.5 8H6.3' }], ['circle', { cx: 10, cy: 20, r: 1.3 }], ['circle', { cx: 17, cy: 20, r: 1.3 }]],
+  staples: [['path', { d: 'M3.5 9.5h17M5 9.5l1.4 9a2 2 0 0 0 2 1.7h7.2a2 2 0 0 0 2-1.7l1.4-9M8.5 9.5 12 4l3.5 5.5M10 13.5v3M14 13.5v3' }]],
   recipes: [['path', { d: 'M6 3.5h11.5a1.5 1.5 0 0 1 1.5 1.5v15.5H7a2 2 0 0 1-2-2V4.5a1 1 0 0 1 1-1z' }], ['path', { d: 'M5 18.5a2 2 0 0 1 2-2h12M9 8h6' }]],
   settings: [['path', { d: 'M4 7h9M17 7h3M4 17h3M11 17h9' }], ['circle', { cx: 15, cy: 7, r: 2 }], ['circle', { cx: 9, cy: 17, r: 2 }]],
 };
@@ -190,7 +192,7 @@ function icon(name) {
 function tabbar(active) {
   const tab = (id, label) => h('a', { href: `#/${id}`, class: active === id ? 'active' : '', 'aria-current': active === id ? 'page' : null }, icon(id), label);
   return h('nav', { class: 'tabbar', 'aria-label': 'Main' }, h('div', { class: 'inner' },
-    tab('week', 'This week'), tab('shop', 'Shopping'), tab('recipes', 'Recipes'), tab('settings', 'Settings')));
+    tab('week', 'This week'), tab('shop', 'Shopping'), tab('staples', 'Staples'), tab('recipes', 'Recipes'), tab('settings', 'Settings')));
 }
 function topbar(title, extra) {
   return h('header', { class: 'topbar' },
@@ -245,7 +247,7 @@ function renderAuth(notice) {
   btn,
   isUp ? h('p', { class: 'small muted' }, 'Use the email address your household invite was sent to, so your account links up automatically.') : null);
   mount(h('main', { class: 'auth' },
-    h('div', { class: 'hero' }, h('img', { src: 'icon.svg', alt: '' }), h('h1', null, 'Household Meals'), h('p', { class: 'muted' }, 'Plan dinners together, vote, and shop.')),
+    h('div', { class: 'hero' }, h('img', { src: 'icon.svg', alt: '' }), h('h1', null, 'Household Meals'), h('p', { class: 'muted' }, 'Plan meals together, vote on dinners, and shop.')),
     form));
 }
 
@@ -265,19 +267,20 @@ function renderUnlinked() {
 async function loadWeekData(ws) {
   const { data: week, error } = await sb.from('weeks').select('*').eq('household_id', S.household.id).eq('week_start', ws).maybeSingle();
   if (error) throw error;
-  if (!week) return { week: null, slots: [], votes: [] };
-  const [slots, votes] = await Promise.all([
+  if (!week) return { week: null, slots: [], votes: [], meals: [], items: [] };
+  const [slots, votes, meals, items] = await Promise.all([
     sb.from('week_slots').select('*, recipe:recipes(id, title, source_url, source_name)').eq('week_id', week.id).order('date').order('position'),
     sb.from('votes').select('*').eq('week_id', week.id),
+    sb.from('meal_plan_items').select('*').eq('week_id', week.id).order('date'),
+    sb.from('shopping_list_items').select('id, name, position, meal_plan_item_id, staple_id').eq('week_id', week.id),
   ]);
-  if (slots.error) throw slots.error;
-  if (votes.error) throw votes.error;
-  return { week, slots: slots.data, votes: votes.data };
+  for (const r of [slots, votes, meals, items]) if (r.error) throw r.error;
+  return { week, slots: slots.data, votes: votes.data, meals: meals.data || [], items: items.data || [] };
 }
 
 async function renderWeek() {
   const content = h('div', { class: 'content' }, h('div', { class: 'card muted center' }, 'Loading this week…'));
-  mount(topbar('Dinners', weekPicker(renderWeek)), content, tabbar('week'));
+  mount(topbar('This week', weekPicker(renderWeek)), content, tabbar('week'));
   const ws = S.weekStart;
   let d;
   try { d = await loadWeekData(ws); } catch (err) { content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(err))); return; }
@@ -305,6 +308,7 @@ async function renderWeek() {
     parts.push(nightsCard(ws, d.slots));
     parts.push(votesCard(d));
   }
+  parts.push(smallMealsCard(ws, d));
   parts.push(checkNowCard(d.week));
   content.replaceChildren(...parts);
 }
@@ -339,7 +343,7 @@ function nightsCard(ws, slots) {
     });
     rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, dayCol, h('div', { class: 'stack' }, body)));
   }
-  return h('section', { class: 'card' }, rows);
+  return h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Dinners')), rows);
 }
 
 function votesCard({ week, slots, votes }) {
@@ -429,7 +433,7 @@ function checkNowCard(week) {
 }
 
 /* ---------------- shopping ---------------- */
-const CATEGORIES = ['Produce', 'Meat', 'Dairy & Eggs', 'Bakery', 'Pantry', 'Canned Goods', 'Spices & Baking', 'Frozen', 'Snacks', 'Beverages', 'Household', 'Other'];
+const CATEGORIES = ['Produce', 'Meat', 'Dairy', 'Bakery', 'Pantry', 'Spices', 'Frozen', 'Breakfast basics', 'Snacks', 'Drinks', 'Household', 'Other'];
 let hideChecked = sessionStorage.getItem('hideChecked') === '1';
 
 async function renderShop() {
@@ -443,11 +447,15 @@ async function renderShop() {
     return content.replaceChildren(h('div', { class: 'card stack center' }, h('h2', null, 'No list for this week'),
       h('p', { class: 'muted' }, 'A shopping list appears once the meal bot plans this week.')), checkNowCard(null));
   }
-  const { data: items, error: e2 } = await sb.from('shopping_list_items').select('*').eq('week_id', week.id).order('position').order('name');
+  const [{ data: items, error: e2 }, { data: meals }] = await Promise.all([
+    sb.from('shopping_list_items').select('*').eq('week_id', week.id).order('position').order('name'),
+    sb.from('meal_plan_items').select('id, date, meal_type, title').eq('week_id', week.id),
+  ]);
   if (e2) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(e2)));
+  const mealById = Object.fromEntries((meals || []).map((m) => [m.id, m]));
   if (route().view !== 'shop' || ws !== S.weekStart) return;
   const recipeTitle = Object.fromEntries(S.recipes.map((r) => [r.id, r.title]));
-  const store = S.household.preferred_stores?.[0] || 'Walmart';
+  const store = storeName();
 
   const listWrap = h('div', { class: 'stack' });
   const counter = h('span', { class: 'small muted' });
@@ -479,7 +487,7 @@ async function renderShop() {
     const row = h('div', { class: `item${it.checked ? ' done' : ''}` }, cb,
       h('div', { class: 'grow' },
         h('div', { class: 'name' }, it.name, qty ? h('span', { class: 'muted small' }, ` · ${qty}`) : null),
-        it.recipe_id && recipeTitle[it.recipe_id] ? h('div', { class: 'small muted' }, `For ${recipeTitle[it.recipe_id]}`) : null,
+        sourceLabel(it, recipeTitle, mealById),
         hasPrice ? h('div', { class: 'price' }, `$${(it.price_cents / 100).toFixed(2)} · ${it.price_source}${it.price_verified_at ? ' · checked ' + fmtTs(it.price_verified_at) : ''}`) : null),
       h('button', { class: 'ghost', 'aria-label': `Remove ${it.name}`, onclick: async () => {
         if (!confirm(`Remove “${it.name}” from the list?`)) return;
@@ -511,14 +519,15 @@ async function renderShop() {
     const maxPos = items.reduce((m, i) => Math.max(m, i.position || 0), 0);
     const { data, error } = await sb.from('shopping_list_items').insert({
       week_id: week.id, name: name.value.trim(), quantity: qty.value === '' ? null : Number(qty.value),
-      unit: unit.value.trim() || null, category: cat.value.trim() || 'Other', store, position: maxPos + 1,
+      unit: unit.value.trim() || null, category: cat.value.trim() || 'Other', store, position: maxPos + 1, source: 'manual',
     }).select().single();
     addBtn.disabled = false;
     if (error) return toast(friendlyError(error), true);
     items.push(data); name.value = ''; qty.value = ''; unit.value = '';
     draw(); toast('Added.');
   } },
-  h('h2', null, 'Add an item'), h('label', null, 'Item', name), h('div', { class: 'grid2' }, qty, unit), cat, catList, addBtn);
+  h('h2', null, 'Add an item'), h('label', null, 'Item', name), h('div', { class: 'grid2' }, qty, unit), cat, catList, addBtn,
+  h('p', { class: 'small muted' }, 'Snacks, drinks and basics live in the Staples tab, so you can add them every week in one tap.'));
 
   const hideBtn = h('button', { class: 'ghost' }, hideChecked ? 'Show checked' : 'Hide checked');
   hideBtn.addEventListener('click', () => { hideChecked = !hideChecked; sessionStorage.setItem('hideChecked', hideChecked ? '1' : '0'); hideBtn.textContent = hideChecked ? 'Show checked' : 'Hide checked'; draw(); });
@@ -528,6 +537,273 @@ async function renderShop() {
     h('div', { class: 'row spread' }, h('div', null, h('strong', null, store), ' ', counter), hideBtn),
     listWrap, addForm, checkNowCard(week),
     h('p', { class: 'small muted center' }, 'Prices only show when the meal bot has a verified price with a source.'));
+}
+
+/* ---------------- shared list helpers ---------------- */
+const storeName = () => S.household?.preferred_stores?.[0] || 'Walmart';
+const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+const MEAL_TYPES = [['breakfast', 'Breakfast'], ['lunch', 'Lunch']];
+const MEAL_LABEL = Object.fromEntries(MEAL_TYPES);
+
+// rough aisle guess for free-text breakfast/lunch lines; anything unknown lands in "Other"
+const CATEGORY_HINTS = [
+  ['Frozen', /\bfrozen\b|waffles?\b|ice cream/],
+  ['Dairy', /\b(milk|eggs?|yogh?urts?|cheese|butter|cream cheese|sour cream|half and half|creamer|cottage)\b/],
+  ['Meat', /\b(ham|turkey|bacon|sausages?|chicken|beef|salami|pepperoni|deli meat|lunch meat|hot dogs?)\b/],
+  ['Bakery', /\b(bread|bagels?|tortillas?|buns?|rolls?|english muffins?|muffins?|croissants?|pitas?|naan)\b/],
+  ['Produce', /\b(bananas?|apples?|berr(y|ies)|strawberr(y|ies)|blueberr(y|ies)|grapes?|oranges?|lettuce|spinach|tomato(es)?|avocados?|cucumbers?|carrots?|celery|peppers?|onions?|lemons?|limes?|potato(es)?|fruit|salad mix)\b/],
+  ['Breakfast basics', /\b(cereal|oats|oatmeal|granola|pancake mix|syrup)\b/],
+  ['Pantry', /\b(peanut butter|jam|jelly|honey|mayo(nnaise)?|mustard|ketchup|rice|pasta|noodles|beans|soup|tuna|crackers|chips|salsa|sauce)\b/],
+  ['Drinks', /\b(juice|coffee|tea|soda|sparkling|water)\b/],
+];
+function guessCategory(name) {
+  const n = norm(name);
+  for (const [cat, re] of CATEGORY_HINTS) if (re.test(n)) return cat;
+  return 'Other';
+}
+
+// insert rows into the week's shopping list, skipping anything already on it (same name or same staple)
+async function addToList(weekId, rows, existing) {
+  const haveName = new Set(existing.map((i) => norm(i.name)));
+  const haveStaple = new Set(existing.filter((i) => i.staple_id).map((i) => i.staple_id));
+  const fresh = []; const skipped = [];
+  for (const r of rows) {
+    const k = norm(r.name);
+    if (!k) continue;
+    if (haveName.has(k) || (r.staple_id && haveStaple.has(r.staple_id))) { skipped.push(r.name); continue; }
+    haveName.add(k); if (r.staple_id) haveStaple.add(r.staple_id);
+    fresh.push(r);
+  }
+  if (!fresh.length) return { added: [], skipped };
+  let pos = existing.reduce((m, i) => Math.max(m, i.position || 0), 0);
+  const payload = fresh.map((r) => ({ week_id: weekId, store: storeName(), position: ++pos, quantity: null, unit: null, ...r }));
+  const { data, error } = await sb.from('shopping_list_items').insert(payload).select();
+  if (error) throw error;
+  existing.push(...(data || []));
+  return { added: data || [], skipped };
+}
+function listResultText({ added, skipped }) {
+  const parts = [];
+  if (added.length) parts.push(`Added ${added.length} item${added.length === 1 ? '' : 's'} to the list`);
+  if (skipped.length) parts.push(`${skipped.length} already on it`);
+  return parts.join(' · ') || 'Nothing to add.';
+}
+
+function sourceLabel(it, recipeTitle, mealById) {
+  let text = null;
+  if (it.recipe_id && recipeTitle[it.recipe_id]) text = `For ${recipeTitle[it.recipe_id]}`;
+  else if (it.source === 'breakfast' || it.source === 'lunch') {
+    const m = it.meal_plan_item_id ? mealById[it.meal_plan_item_id] : null;
+    text = [MEAL_LABEL[it.source], m ? fmtD(m.date, { weekday: 'short' }) : null, m?.title].filter(Boolean).join(' · ');
+  } else if (it.source === 'staple') text = 'Staple';
+  return text ? h('div', { class: 'src' }, text) : null;
+}
+
+/* ---------------- breakfast & lunch (no voting, editable even when locked) ---------------- */
+function smallMealsCard(ws, d) {
+  const card = h('section', { class: 'card', id: 'meals' });
+  const head = h('div', { class: 'card-head' }, h('h2', null, 'Breakfast & lunch'),
+    h('p', { class: 'small muted' }, 'No voting needed. Plan what you’ll shop for. Edit anytime, even after dinners lock.'));
+  if (!d.week) {
+    card.append(head, h('p', { class: 'small muted' }, 'You can plan breakfast and lunch once this week has a plan.'));
+    return card;
+  }
+  const today = todayISO();
+  let editing = null; // 'date|type'
+  const draw = () => {
+    const byKey = new Map(d.meals.map((m) => [`${m.date}|${m.meal_type}`, m]));
+    const rows = [];
+    for (let i = 0; i < 7; i++) {
+      const date = addDays(ws, i);
+      const dayCol = h('div', { class: 'day' }, h('div', { class: 'dow' }, fmtD(date, { weekday: 'short' })), h('div', { class: 'dom' }, fmtD(date, { day: 'numeric' })));
+      const lines = h('div', { class: 'meals' });
+      for (const [type, label] of MEAL_TYPES) {
+        const key = `${date}|${type}`;
+        const item = byKey.get(key) || null;
+        if (editing === key) { lines.append(mealEditor(d, date, type, label, item, () => { editing = null; draw(); })); continue; }
+        const onList = item ? d.items.filter((x) => x.meal_plan_item_id === item.id).length : 0;
+        const recipe = item?.recipe_id ? S.recipes.find((r) => r.id === item.recipe_id) : null;
+        lines.append(h('button', {
+          type: 'button', class: `mealline${item ? '' : ' empty'}`,
+          'aria-label': item ? `${label} ${fmtD(date, { weekday: 'long' })}: ${item.title}. Edit` : `Add ${label.toLowerCase()} for ${fmtD(date, { weekday: 'long' })}`,
+          onclick: () => { editing = key; draw(); card.querySelector('.meal-edit input')?.focus(); },
+        },
+        h('span', { class: 'mlabel' }, label),
+        h('span', { class: 'mtitle' }, item ? item.title : '+ Add',
+          item && (recipe || onList) ? h('span', { class: 'mmeta' }, [recipe ? (norm(recipe.title) === norm(item.title) ? 'Recipe linked' : `Recipe: ${recipe.title}`) : null, onList ? `${onList} on list` : null].filter(Boolean).join(' · ')) : null)));
+      }
+      rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, dayCol, lines));
+    }
+    card.replaceChildren(head, ...rows);
+  };
+  draw();
+  return card;
+}
+
+function mealEditor(d, date, type, label, item, close) {
+  const title = h('input', { maxlength: 200, 'aria-label': `${label} for ${fmtD(date, { weekday: 'long' })}`, placeholder: type === 'breakfast' ? 'e.g. Oatmeal & berries' : 'e.g. Turkey sandwiches', value: item?.title || '' });
+  const recipe = h('select', { 'aria-label': 'Link a recipe (optional)' }, h('option', { value: '' }, 'No recipe link'), S.recipes.map((r) => h('option', { value: r.id }, r.title)));
+  recipe.value = item?.recipe_id || '';
+  const ing = h('textarea', { rows: 3, maxlength: 2000, placeholder: 'Ingredients to add to the shopping list, one per line\nRolled oats\nBlueberries' });
+  const save = h('button', { type: 'submit' }, 'Save');
+  const form = h('form', { class: 'meal-edit', onsubmit: async (e) => {
+    e.preventDefault();
+    const t = title.value.trim();
+    const lines = ing.value.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!t) { toast(`Give ${label.toLowerCase()} a name first.`, true); title.focus(); return; }
+    save.disabled = true;
+    try {
+      const row = { week_id: d.week.id, household_id: S.household.id, date, meal_type: type, title: t, recipe_id: recipe.value || null };
+      const q = item ? sb.from('meal_plan_items').update({ title: row.title, recipe_id: row.recipe_id }).eq('id', item.id) : sb.from('meal_plan_items').insert(row);
+      const { data, error } = await q.select().single();
+      if (error) throw error;
+      const i = d.meals.findIndex((m) => m.id === data.id);
+      if (i >= 0) d.meals[i] = data; else d.meals.push(data);
+      let msg = 'Saved.';
+      if (lines.length) {
+        const res = await addToList(d.week.id, lines.map((name) => ({ name, category: guessCategory(name), source: type, meal_plan_item_id: data.id })), d.items);
+        msg = `Saved. ${listResultText(res)}.`;
+      }
+      toast(msg);
+      close();
+    } catch (err) { toast(friendlyError(err), true); } finally { save.disabled = false; }
+  } },
+  h('div', { class: 'mlabel' }, `${label} · ${fmtD(date, { weekday: 'long' })}`),
+  title, recipe, ing,
+  h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'secondary', onclick: close }, 'Cancel'), h('span', { class: 'grow' }),
+    item ? h('button', { type: 'button', class: 'ghost danger', onclick: async () => {
+      if (!confirm(`Remove ${label.toLowerCase()} on ${fmtD(date, { weekday: 'long' })}? Items already on the shopping list stay there.`)) return;
+      const { error } = await sb.from('meal_plan_items').delete().eq('id', item.id);
+      if (error) return toast(friendlyError(error), true);
+      d.meals.splice(d.meals.findIndex((m) => m.id === item.id), 1);
+      toast('Removed.'); close();
+    } }, 'Remove') : null));
+  form.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  return form;
+}
+
+/* ---------------- staples ---------------- */
+const STAPLE_CATS = ['Snacks', 'Drinks', 'Breakfast basics', 'Household', 'Other'];
+
+async function renderStaples() {
+  const content = h('div', { class: 'content' }, h('div', { class: 'card muted center' }, 'Loading staples…'));
+  mount(topbar('Staples', weekPicker(renderStaples)), content, tabbar('staples'));
+  const ws = S.weekStart;
+  const hid = S.household.id;
+  const [st, wk] = await Promise.all([
+    sb.from('staples').select('*').eq('household_id', hid).order('position').order('name'),
+    sb.from('weeks').select('id, status').eq('household_id', hid).eq('week_start', ws).maybeSingle(),
+  ]);
+  if (route().view !== 'staples' || ws !== S.weekStart) return;
+  if (st.error || wk.error) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(st.error || wk.error)));
+  const staples = st.data || [];
+  const week = wk.data;
+  let items = [];
+  if (week) {
+    const r = await sb.from('shopping_list_items').select('id, name, position, staple_id').eq('week_id', week.id);
+    if (r.error) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(r.error)));
+    items = r.data || [];
+  }
+  if (route().view !== 'staples' || ws !== S.weekStart) return;
+
+  let editingId = null;
+  const onList = (s) => items.some((i) => i.staple_id === s.id || norm(i.name) === norm(s.name));
+  const toRow = (s) => ({ name: s.name, quantity: s.quantity ?? null, unit: s.unit || null, category: s.category || 'Other', source: 'staple', staple_id: s.id });
+  const addStaples = async (list, btn) => {
+    if (!week) return;
+    btn.disabled = true;
+    try { toast(listResultText(await addToList(week.id, list.map(toRow), items))); } catch (err) { toast(friendlyError(err), true); }
+    btn.disabled = false; draw();
+  };
+
+  const bulkBtn = h('button', { class: 'block' });
+  bulkBtn.addEventListener('click', () => addStaples(staples.filter((s) => s.active && !onList(s)), bulkBtn));
+  const bulkNote = h('p', { class: 'small muted center' });
+  const listWrap = h('div', { class: 'stack' });
+
+  const staplesForm = (s, onDone) => {
+    const f = {
+      name: h('input', { required: true, maxlength: 200, placeholder: 'e.g. Sparkling water', value: s?.name || '', 'aria-label': 'Item' }),
+      category: h('select', { 'aria-label': 'Category' }, [...new Set([...STAPLE_CATS, s?.category].filter(Boolean))].map((c) => h('option', { value: c }, c))),
+      quantity: h('input', { type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: 'Qty', value: s?.quantity ?? '', 'aria-label': 'Quantity' }),
+      unit: h('input', { maxlength: 40, placeholder: 'Unit (pack, box…)', value: s?.unit || '', 'aria-label': 'Unit' }),
+    };
+    f.category.value = s?.category || 'Snacks';
+    const save = h('button', { type: 'submit' }, s ? 'Save' : 'Add staple');
+    const form = h('form', { class: s ? 'meal-edit' : 'stack', onsubmit: async (e) => {
+      e.preventDefault();
+      const row = { name: f.name.value.trim(), category: f.category.value, quantity: f.quantity.value === '' ? null : Number(f.quantity.value), unit: f.unit.value.trim() || null };
+      if (!row.name) return;
+      save.disabled = true;
+      const q = s ? sb.from('staples').update(row).eq('id', s.id)
+        : sb.from('staples').insert({ ...row, household_id: hid, active: true, position: staples.reduce((m, x) => Math.max(m, x.position || 0), 0) + 1 });
+      const { data, error } = await q.select().single();
+      save.disabled = false;
+      if (error) return toast(error.code === '23505' ? 'That staple is already on your list.' : friendlyError(error), true);
+      if (s) Object.assign(s, data); else staples.push(data);
+      toast(s ? 'Saved.' : 'Staple added.');
+      onDone();
+    } },
+    s ? h('div', { class: 'mlabel' }, 'Edit staple') : h('h2', null, 'Add a staple'),
+    s ? f.name : h('label', null, 'Item', f.name),
+    s ? f.category : h('label', null, 'Category', f.category),
+    h('div', { class: 'grid2' }, f.quantity, f.unit),
+    s ? h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'secondary', onclick: onDone }, 'Cancel'), h('span', { class: 'grow' }),
+      h('button', { type: 'button', class: 'ghost danger', onclick: async () => {
+        if (!confirm(`Remove “${s.name}” from staples? It stays on any shopping list it’s already on.`)) return;
+        const { error } = await sb.from('staples').delete().eq('id', s.id);
+        if (error) return toast(friendlyError(error), true);
+        staples.splice(staples.indexOf(s), 1); toast('Removed.'); onDone();
+      } }, 'Remove'))
+      : save);
+    return form;
+  };
+
+  const stapleRow = (s) => {
+    if (editingId === s.id) return staplesForm(s, () => { editingId = null; draw(); });
+    const qty = [s.quantity != null ? Number(s.quantity).toString() : null, s.unit].filter(Boolean).join(' ');
+    const cb = h('input', { type: 'checkbox', 'aria-label': `Include ${s.name} when adding checked items` });
+    cb.checked = !!s.active;
+    cb.addEventListener('change', async () => {
+      const val = cb.checked; s.active = val;
+      const { error } = await sb.from('staples').update({ active: val }).eq('id', s.id);
+      if (error) { s.active = !val; toast(friendlyError(error), true); }
+      draw();
+    });
+    const there = week && onList(s);
+    const addBtn = week && !there ? h('button', { class: 'ghost add', 'aria-label': `Add ${s.name} to this week’s list` }, 'Add') : null;
+    if (addBtn) addBtn.addEventListener('click', () => addStaples([s], addBtn));
+    return h('div', { class: `item${s.active ? '' : ' inactive'}` }, cb,
+      h('div', { class: 'grow' }, h('div', { class: 'name' }, s.name), qty ? h('div', { class: 'small muted' }, qty) : null),
+      h('div', { class: 'side' },
+        there ? h('span', { class: 'chip on' }, '✓ On list') : addBtn,
+        h('button', { class: 'ghost', 'aria-label': `Edit ${s.name}`, onclick: () => { editingId = s.id; draw(); } }, 'Edit')));
+  };
+
+  const draw = () => {
+    const pending = staples.filter((s) => s.active && !onList(s));
+    if (!week) { bulkBtn.disabled = true; bulkBtn.textContent = 'Add checked to list'; bulkNote.textContent = 'No shopping list for this week yet. It appears once the meal bot plans the week.'; }
+    else if (!staples.length) { bulkBtn.disabled = true; bulkBtn.textContent = 'Add checked to list'; bulkNote.textContent = 'Add a few staples below to get started.'; }
+    else if (!pending.length) { bulkBtn.disabled = true; bulkBtn.textContent = 'All checked items are on the list'; bulkNote.textContent = `Adding to the ${weekLabel(ws)} list.`; }
+    else { bulkBtn.disabled = false; bulkBtn.textContent = `Add ${pending.length} checked to list`; bulkNote.textContent = `Adding to the ${weekLabel(ws)} list · ${storeName()}, no prices.`; }
+    const groups = new Map();
+    for (const s of staples) { const k = s.category || 'Other'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); }
+    const order = (k) => { const i = STAPLE_CATS.indexOf(k); return i < 0 ? STAPLE_CATS.length - 1.5 : i; }; // custom categories sit just before Other
+    const keys = [...groups.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+    const cards = keys.map((k) => h('section', { class: 'card aisle' }, h('h3', null, k),
+      groups.get(k).sort((a, b) => (a.position || 0) - (b.position || 0) || a.name.localeCompare(b.name)).map(stapleRow)));
+    if (!staples.length) cards.push(h('div', { class: 'card muted center' }, 'No staples yet. Add snacks, drinks and household basics you buy most weeks.'));
+    listWrap.replaceChildren(...cards);
+  };
+  const addCard = h('section', { class: 'card' });
+  const resetAdd = () => addCard.replaceChildren(staplesForm(null, () => { resetAdd(); draw(); }));
+  resetAdd();
+  draw();
+  content.replaceChildren(
+    h('p', { class: 'small muted' }, 'Snacks, drinks and basics outside of meals. Check the ones you want this week, then add them to the list.'),
+    h('div', { class: 'toolbar' }, bulkBtn, bulkNote),
+    listWrap,
+    addCard);
 }
 
 /* ---------------- recipes ---------------- */
@@ -708,6 +984,9 @@ document.addEventListener('visibilitychange', async () => {
   const { view, arg } = route();
   if (view === 'recipes' && arg) return; // don't clobber an open form
   if (view === 'settings') return;
+  if (appEl.querySelector('.meal-edit')) return; // an inline editor is open
+  const ae = document.activeElement;
+  if (ae && appEl.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return; // mid-typing
   await refreshWeeks();
   render();
 });
