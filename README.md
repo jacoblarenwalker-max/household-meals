@@ -43,6 +43,11 @@ Schema changes are in `supabase/migrations/` (applied to the project as `add_sta
 Icons: `icon.svg` (any), `icon-maskable.svg`, PNG exports `icon-192.png`, `icon-512.png`, `icon-maskable-192.png`,
 `icon-maskable-512.png` and `apple-touch-icon.png` (180×180), wired into `index.html` and `manifest.webmanifest`.
 
+Design: melon yellow + cornflower blue. Tokens live at the top of `styles.css`: cornflower `#6495ED` with
+`#3A63C8` (buttons) / `#2F55B5` (links, active tab) and tint `#EAF0FD`; melon `#FDBC5F` / `#FFD27A` with tint `#FFF4DE`
+and warm text `#8A5200`; page `#FBFAF7`, white cards, navy ink `#1B2340`, slate `#5A6382`; teal for locked/success,
+coral for over budget, periwinkle dusk for dinner. Breakfast = melon, lunch = cornflower, dinner = dusk; today = melon.
+
 ## Security
 
 - `config.js` only has the Supabase URL and the **publishable** key, which is meant to be public.
