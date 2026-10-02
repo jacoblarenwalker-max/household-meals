@@ -14,6 +14,7 @@ const S = {
   weeks: [],         // [{id, week_start, status}]
   weekStart: null,   // selected 'YYYY-MM-DD' Monday
   recipes: [],
+  presets: [],       // saved breakfasts / lunches (meal_presets)
   authMode: 'signin',
 };
 const appEl = document.getElementById('app');
@@ -127,7 +128,7 @@ async function boot() {
 }
 
 async function loadAll() {
-  S.member = null; S.household = null; S.members = []; S.weeks = []; S.recipes = [];
+  S.member = null; S.household = null; S.members = []; S.weeks = []; S.recipes = []; S.presets = [];
   if (!S.session) return;
   const uid = S.session.user.id;
   const { data: mem, error } = await sb.from('household_members').select('*').eq('user_id', uid).limit(1);
@@ -135,22 +136,28 @@ async function loadAll() {
   S.member = mem?.[0] || null;
   if (!S.member) return;
   const hid = S.member.household_id;
-  const [hh, mems, wks, recs] = await Promise.all([
+  const [hh, mems, wks, recs, pre] = await Promise.all([
     sb.from('households').select('*').eq('id', hid).single(),
     sb.from('household_members').select('id, display_name, role, is_voter, user_id, invite_email').eq('household_id', hid).order('created_at'),
     sb.from('weeks').select('id, week_start, status, locked_at').eq('household_id', hid).order('week_start', { ascending: false }).limit(60),
     sb.from('recipes').select('*').eq('household_id', hid).order('title'),
+    sb.from('meal_presets').select('*').eq('household_id', hid).order('position').order('title'),
   ]);
-  for (const r of [hh, mems, wks, recs]) if (r.error) toast(friendlyError(r.error), true);
+  for (const r of [hh, mems, wks, recs, pre]) if (r.error) toast(friendlyError(r.error), true);
   S.household = hh.data || null;
   S.members = mems.data || [];
   S.weeks = wks.data || [];
   S.recipes = recs.data || [];
+  S.presets = pre.data || [];
   if (!S.weekStart) S.weekStart = sessionStorage.getItem('weekStart') || defaultWeekStart();
 }
 async function refreshWeeks() {
   const { data } = await sb.from('weeks').select('id, week_start, status, locked_at').eq('household_id', S.household.id).order('week_start', { ascending: false }).limit(60);
   if (data) S.weeks = data;
+}
+async function refreshPresets() {
+  const { data, error } = await sb.from('meal_presets').select('*').eq('household_id', S.household.id).order('position').order('title');
+  if (error) toast(friendlyError(error), true); else S.presets = data;
 }
 async function refreshRecipes() {
   const { data, error } = await sb.from('recipes').select('*').eq('household_id', S.household.id).order('title');
@@ -166,6 +173,7 @@ function render() {
   if (view === 'staples') return renderStaples();
   if (view === 'recipes') return arg ? renderRecipeForm(arg) : renderRecipes();
   if (view === 'settings') return renderSettings();
+  if (view === 'presets') return renderPresets(arg);
   return renderWeek();
 }
 
@@ -272,7 +280,7 @@ async function loadWeekData(ws) {
     sb.from('week_slots').select('*, recipe:recipes(id, title, source_url, source_name)').eq('week_id', week.id).order('date').order('position'),
     sb.from('votes').select('*').eq('week_id', week.id),
     sb.from('meal_plan_items').select('*').eq('week_id', week.id).order('date'),
-    sb.from('shopping_list_items').select('id, name, position, meal_plan_item_id, staple_id').eq('week_id', week.id),
+    sb.from('shopping_list_items').select('id, name, quantity, unit, category, source, position, checked, meal_plan_item_id, staple_id, preset_generated, price_cents, price_source').eq('week_id', week.id),
   ]);
   for (const r of [slots, votes, meals, items]) if (r.error) throw r.error;
   return { week, slots: slots.data, votes: votes.data, meals: meals.data || [], items: items.data || [] };
@@ -295,10 +303,13 @@ async function renderWeek() {
   }
 
   const parts = [];
+  const budgetSlot = h('div', { class: 'budget-slot' });
+  parts.push(budgetSlot);
+  budgetSummary(ws).then((sum) => { if (sum) budgetSlot.replaceChildren(budgetBar(sum)); });
   if (!d.week) {
     parts.push(h('div', { class: 'card stack center' },
       h('h2', null, 'No plan for this week yet'),
-      h('p', { class: 'muted' }, 'The meal bot hasn’t drafted dinners for this week. Tap “Check now” to ask it to sync.')));
+      h('p', { class: 'muted' }, 'The meal bot hasn’t drafted dinners for this week. Tap “Check now” to ask it to sync, or start planning breakfast and lunch below.')));
   } else {
     const st = d.week.status;
     parts.push(h('div', { class: `status-banner ${st}` },
@@ -313,6 +324,12 @@ async function renderWeek() {
   content.replaceChildren(...parts);
 }
 
+// colored weekday badge: Mon..Sun each get their own soft tint
+function dayBadge(date) {
+  const wd = (parseD(date).getUTCDay() + 6) % 7; // 0 = Monday
+  return h('div', { class: `day wd${wd}` }, h('div', { class: 'dow' }, fmtD(date, { weekday: 'short' })), h('div', { class: 'dom' }, fmtD(date, { day: 'numeric' })));
+}
+
 function nightsCard(ws, slots) {
   const byId = Object.fromEntries(slots.map((s) => [s.id, s]));
   const today = todayISO();
@@ -320,7 +337,7 @@ function nightsCard(ws, slots) {
   for (let i = 0; i < 7; i++) {
     const date = addDays(ws, i);
     const daySlots = slots.filter((s) => s.date === date);
-    const dayCol = h('div', { class: 'day' }, h('div', { class: 'dow' }, fmtD(date, { weekday: 'short' })), h('div', { class: 'dom' }, fmtD(date, { day: 'numeric' })));
+    const dayCol = dayBadge(date);
     if (!daySlots.length) {
       rows.push(h('div', { class: `night empty${date === today ? ' today' : ''}` }, dayCol, h('div', null, h('div', { class: 'title' }, 'Nothing planned'))));
       continue;
@@ -343,7 +360,7 @@ function nightsCard(ws, slots) {
     });
     rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, dayCol, h('div', { class: 'stack' }, body)));
   }
-  return h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Dinners')), rows);
+  return h('section', { class: 'card tint-dinner' }, h('div', { class: 'card-head' }, h('h2', null, h('span', { class: 'meal-dot dinner', 'aria-hidden': 'true' }), 'Dinners')), rows);
 }
 
 function votesCard({ week, slots, votes }) {
@@ -449,7 +466,7 @@ async function renderShop() {
   }
   const [{ data: items, error: e2 }, { data: meals }] = await Promise.all([
     sb.from('shopping_list_items').select('*').eq('week_id', week.id).order('position').order('name'),
-    sb.from('meal_plan_items').select('id, date, meal_type, title').eq('week_id', week.id),
+    sb.from('meal_plan_items').select('id, date, meal_type, title, ingredients').eq('week_id', week.id),
   ]);
   if (e2) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(e2)));
   const mealById = Object.fromEntries((meals || []).map((m) => [m.id, m]));
@@ -459,6 +476,16 @@ async function renderShop() {
 
   const listWrap = h('div', { class: 'stack' });
   const counter = h('span', { class: 'small muted' });
+  const budgetSlot = h('div', { class: 'budget-slot' });
+  const weekTotal = h('div', { class: 'week-total small' });
+  const drawTotals = () => {
+    const priced = items.filter(hasPrice);
+    const spent = priced.reduce((t, i) => t + i.price_cents, 0);
+    const unpriced = items.length - priced.length;
+    weekTotal.replaceChildren(h('span', null, 'This week’s list: ', h('strong', null, money(spent))),
+      h('span', { class: 'muted' }, unpriced ? ` · ${unpriced} of ${items.length} unpriced` : items.length ? ' · every item priced' : ''));
+    budgetSummary(ws).then((sum) => { if (sum && route().view === 'shop' && ws === S.weekStart) budgetSlot.replaceChildren(budgetBar(sum)); });
+  };
   const draw = () => {
     const done = items.filter((i) => i.checked).length;
     counter.textContent = `${done} of ${items.length} checked`;
@@ -473,27 +500,31 @@ async function renderShop() {
     for (const k of keys) {
       const its = groups.get(k).filter((i) => !(hideChecked && i.checked));
       if (!its.length) continue;
-      cards.push(h('section', { class: 'card aisle' }, h('h3', null, k), its.map(itemRow)));
+      cards.push(h('section', { class: `card aisle ${catClass(k)}` }, h('h3', null, h('span', { class: 'aisle-pill' }, k), h('span', { class: 'aisle-count' }, String(its.length))), its.map(itemRow)));
     }
     if (!items.length) cards.push(h('div', { class: 'card muted center' }, 'No items yet. Add one below, or tap Check now.'));
     else if (!cards.length) cards.push(h('div', { class: 'card muted center' }, 'Everything is checked off. Nice work!'));
     listWrap.replaceChildren(...cards);
   };
   const itemRow = (it) => {
-    const qty = [it.quantity != null ? Number(it.quantity).toString() : null, it.unit].filter(Boolean).join(' ');
-    const hasPrice = it.price_cents != null && it.price_source && String(it.price_source).trim();
+    const qty = [it.quantity != null ? fmtQty(it.quantity) : null, it.unit].filter(Boolean).join(' ');
+    const priced = hasPrice(it);
     const cb = h('input', { type: 'checkbox', 'aria-label': `Got ${it.name}` });
     cb.checked = !!it.checked;
+    const link = priced && it.walmart_product_url ? safeUrl(it.walmart_product_url) : null;
+    const product = priced ? productName(it.price_source) : null;
     const row = h('div', { class: `item${it.checked ? ' done' : ''}` }, cb,
       h('div', { class: 'grow' },
         h('div', { class: 'name' }, it.name, qty ? h('span', { class: 'muted small' }, ` · ${qty}`) : null),
         sourceLabel(it, recipeTitle, mealById),
-        hasPrice ? h('div', { class: 'price' }, `$${(it.price_cents / 100).toFixed(2)} · ${it.price_source}${it.price_verified_at ? ' · checked ' + fmtTs(it.price_verified_at) : ''}`) : null),
+        priced ? h('div', { class: 'pricesrc', title: it.price_source + (it.price_verified_at ? ` · checked ${fmtTs(it.price_verified_at)}` : '') },
+          link ? h('a', { href: link, target: '_blank', rel: 'noopener noreferrer' }, product) : product) : null),
+      priced ? h('span', { class: 'price', 'aria-label': `Price ${money(it.price_cents)}` }, money(it.price_cents)) : null,
       h('button', { class: 'ghost', 'aria-label': `Remove ${it.name}`, onclick: async () => {
         if (!confirm(`Remove “${it.name}” from the list?`)) return;
         const { error } = await sb.from('shopping_list_items').delete().eq('id', it.id);
         if (error) return toast(friendlyError(error), true);
-        items.splice(items.indexOf(it), 1); draw();
+        items.splice(items.indexOf(it), 1); draw(); drawTotals();
       } }, '✕'));
     cb.addEventListener('change', async () => {
       const val = cb.checked;
@@ -524,7 +555,7 @@ async function renderShop() {
     addBtn.disabled = false;
     if (error) return toast(friendlyError(error), true);
     items.push(data); name.value = ''; qty.value = ''; unit.value = '';
-    draw(); toast('Added.');
+    draw(); drawTotals(); toast('Added.');
   } },
   h('h2', null, 'Add an item'), h('label', null, 'Item', name), h('div', { class: 'grid2' }, qty, unit), cat, catList, addBtn,
   h('p', { class: 'small muted' }, 'Snacks, drinks and basics live in the Staples tab, so you can add them every week in one tap.'));
@@ -532,11 +563,12 @@ async function renderShop() {
   const hideBtn = h('button', { class: 'ghost' }, hideChecked ? 'Show checked' : 'Hide checked');
   hideBtn.addEventListener('click', () => { hideChecked = !hideChecked; sessionStorage.setItem('hideChecked', hideChecked ? '1' : '0'); hideBtn.textContent = hideChecked ? 'Show checked' : 'Hide checked'; draw(); });
 
-  draw();
+  draw(); drawTotals();
   content.replaceChildren(
+    h('div', { class: 'shop-head' }, budgetSlot, weekTotal),
     h('div', { class: 'row spread' }, h('div', null, h('strong', null, store), ' ', counter), hideBtn),
     listWrap, addForm, checkNowCard(week),
-    h('p', { class: 'small muted center' }, 'Prices only show when the meal bot has a verified price with a source.'));
+    h('p', { class: 'small muted center' }, 'Only items with a verified price and source count toward the budget. Prices are walmart.com online prices (no store selected), so the Rexburg store’s shelf price may differ a little.'));
 }
 
 /* ---------------- shared list helpers ---------------- */
@@ -589,10 +621,26 @@ function listResultText({ added, skipped }) {
   return parts.join(' · ') || 'Nothing to add.';
 }
 
+// category → color class for aisle headers and chips
+const CAT_CLASS = { produce: 'produce', meat: 'meat', dairy: 'dairy', bakery: 'bakery', pantry: 'pantry', spices: 'spices', frozen: 'frozen', 'breakfast basics': 'breakfast', snacks: 'snacks', drinks: 'drinks', household: 'household' };
+const catClass = (k) => `cat-${CAT_CLASS[norm(k)] || 'other'}`;
+// "walmart.com online price, <product>, <url>, checked …" → "<product>"
+function productName(src) {
+  const s = String(src || '');
+  const m = s.match(/^walmart\.com online price,\s*(.+?),\s*https?:\/\//i);
+  return m ? m[1] : s;
+}
+
 function sourceLabel(it, recipeTitle, mealById) {
   let text = null;
   if (it.recipe_id && recipeTitle[it.recipe_id]) text = `For ${recipeTitle[it.recipe_id]}`;
-  else if (it.source === 'breakfast' || it.source === 'lunch') {
+  else if (it.preset_generated) {
+    const k = ingKey(it.name, it.unit);
+    const uses = Object.values(mealById).filter((m) => ingList(m.ingredients).some((i) => ingKey(i.name, i.unit) === k));
+    const titles = [...new Set(uses.map((m) => m.title))];
+    const types = [...new Set(uses.map((m) => MEAL_LABEL[m.meal_type]))];
+    text = [types.join(' & ') || MEAL_LABEL[it.source] || 'Saved meal', titles.length ? titles.join(', ') : null, uses.length ? `${uses.length} day${uses.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ');
+  } else if (it.source === 'breakfast' || it.source === 'lunch') {
     const m = it.meal_plan_item_id ? mealById[it.meal_plan_item_id] : null;
     text = [MEAL_LABEL[it.source], m ? fmtD(m.date, { weekday: 'short' }) : null, m?.title].filter(Boolean).join(' · ');
   } else if (it.source === 'staple') text = 'Staple';
@@ -600,44 +648,180 @@ function sourceLabel(it, recipeTitle, mealById) {
 }
 
 /* ---------------- breakfast & lunch (no voting, editable even when locked) ---------------- */
+const presetsOf = (type) => S.presets.filter((p) => p.meal_type === type).sort((a, b) => (a.position || 0) - (b.position || 0) || a.title.localeCompare(b.title));
+const ingList = (x) => (Array.isArray(x) ? x : []).filter((i) => i && String(i.name || '').trim());
+const fmtQty = (q) => (q == null || q === '' ? '' : String(Math.round(Number(q) * 100) / 100));
+const ingText = (i) => [fmtQty(i.quantity), i.unit, i.name].filter(Boolean).join(' ');
+
+async function createWeek(ws) {
+  const { error } = await sb.from('weeks').insert({ household_id: S.household.id, week_start: ws, status: 'draft' });
+  if (error && error.code !== '23505') throw error; // 23505: someone else just created it
+  await refreshWeeks();
+}
+
 function smallMealsCard(ws, d) {
-  const card = h('section', { class: 'card', id: 'meals' });
-  const head = h('div', { class: 'card-head' }, h('h2', null, 'Breakfast & lunch'),
-    h('p', { class: 'small muted' }, 'No voting needed. Plan what you’ll shop for. Edit anytime, even after dinners lock.'));
+  const card = h('section', { class: 'card tint-meals', id: 'meals' });
+  const head = h('div', { class: 'card-head' }, h('h2', null, h('span', { class: 'meal-dot breakfast', 'aria-hidden': 'true' }), h('span', { class: 'meal-dot lunch', 'aria-hidden': 'true' }), 'Breakfast & lunch'),
+    h('p', { class: 'small muted' }, 'Tap a day to pick a saved breakfast or lunch. Ingredients go straight to the shopping list. No voting needed.'));
   if (!d.week) {
-    card.append(head, h('p', { class: 'small muted' }, 'You can plan breakfast and lunch once this week has a plan.'));
+    const start = h('button', { class: 'block' }, 'Start planning this week');
+    start.addEventListener('click', async () => {
+      start.disabled = true;
+      try { await createWeek(ws); toast('Week started.'); renderWeek(); } catch (err) { toast(friendlyError(err), true); start.disabled = false; }
+    });
+    card.append(head, h('p', { class: 'small muted' }, `No plan exists for ${weekLabel(ws)} yet. Start one to plan breakfast and lunch now; dinners stay with the meal bot.`), start);
     return card;
   }
   const today = todayISO();
-  let editing = null; // 'date|type'
+  let editing = null; // 'date|type' → free-text editor
+  let picking = null; // 'date|type' → preset picker
   const draw = () => {
     const byKey = new Map(d.meals.map((m) => [`${m.date}|${m.meal_type}`, m]));
     const rows = [];
     for (let i = 0; i < 7; i++) {
       const date = addDays(ws, i);
-      const dayCol = h('div', { class: 'day' }, h('div', { class: 'dow' }, fmtD(date, { weekday: 'short' })), h('div', { class: 'dom' }, fmtD(date, { day: 'numeric' })));
       const lines = h('div', { class: 'meals' });
       for (const [type, label] of MEAL_TYPES) {
         const key = `${date}|${type}`;
         const item = byKey.get(key) || null;
-        if (editing === key) { lines.append(mealEditor(d, date, type, label, item, () => { editing = null; draw(); })); continue; }
+        const close = () => { editing = null; picking = null; draw(); };
+        if (editing === key) { lines.append(mealEditor(d, date, type, label, item, close)); continue; }
+        if (picking === key) { lines.append(presetPicker(d, ws, date, type, label, item, close, () => { picking = null; editing = key; draw(); card.querySelector('.meal-edit input')?.focus(); })); continue; }
+        const nIng = ingList(item?.ingredients).length;
         const onList = item ? d.items.filter((x) => x.meal_plan_item_id === item.id).length : 0;
         const recipe = item?.recipe_id ? S.recipes.find((r) => r.id === item.recipe_id) : null;
+        const meta = item ? [item.preset_id || nIng ? 'Saved' : null, recipe ? (norm(recipe.title) === norm(item.title) ? 'Recipe linked' : `Recipe: ${recipe.title}`) : null,
+          nIng ? `${nIng} ingredient${nIng === 1 ? '' : 's'}` : null, onList ? `${onList} on list` : null].filter(Boolean).join(' · ') : '';
         lines.append(h('button', {
-          type: 'button', class: `mealline${item ? '' : ' empty'}`,
-          'aria-label': item ? `${label} ${fmtD(date, { weekday: 'long' })}: ${item.title}. Edit` : `Add ${label.toLowerCase()} for ${fmtD(date, { weekday: 'long' })}`,
-          onclick: () => { editing = key; draw(); card.querySelector('.meal-edit input')?.focus(); },
+          type: 'button', class: `mealline ${type}${item ? '' : ' empty'}`,
+          'aria-label': item ? `${label} ${fmtD(date, { weekday: 'long' })}: ${item.title}. Change` : `Add ${label.toLowerCase()} for ${fmtD(date, { weekday: 'long' })}`,
+          onclick: () => { editing = null; picking = key; draw(); card.querySelector('.picker .pchip, .picker button')?.focus(); },
         },
         h('span', { class: 'mlabel' }, label),
-        h('span', { class: 'mtitle' }, item ? item.title : '+ Add',
-          item && (recipe || onList) ? h('span', { class: 'mmeta' }, [recipe ? (norm(recipe.title) === norm(item.title) ? 'Recipe linked' : `Recipe: ${recipe.title}`) : null, onList ? `${onList} on list` : null].filter(Boolean).join(' · ')) : null)));
+        h('span', { class: 'mtitle' }, item ? item.title : '+ Add', meta ? h('span', { class: 'mmeta' }, meta) : null)));
       }
-      rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, dayCol, lines));
+      rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, dayBadge(date), lines));
     }
     card.replaceChildren(head, ...rows);
   };
   draw();
   return card;
+}
+
+// one-tap picker of saved breakfasts / lunches for a day (optionally the whole week)
+function presetPicker(d, ws, date, type, label, item, close, freeText) {
+  const list = presetsOf(type);
+  const dayName = fmtD(date, { weekday: 'long' });
+  const allDays = h('input', { type: 'checkbox', 'aria-label': `Fill the whole week with this ${label.toLowerCase()}` });
+  const busy = (on) => wrap.querySelectorAll('button').forEach((b) => { b.disabled = on; });
+  const apply = async (p) => {
+    busy(true);
+    try {
+      const dates = allDays.checked ? Array.from({ length: 7 }, (_, i) => addDays(ws, i)) : [date];
+      const rows = dates.map((dt) => ({ week_id: d.week.id, household_id: S.household.id, date: dt, meal_type: type, title: p.title, preset_id: p.id, ingredients: ingList(p.ingredients), recipe_id: null }));
+      const { data, error } = await sb.from('meal_plan_items').upsert(rows, { onConflict: 'week_id,date,meal_type' }).select();
+      if (error) throw error;
+      for (const m of data || []) { const i = d.meals.findIndex((x) => x.id === m.id || (x.date === m.date && x.meal_type === m.meal_type)); if (i >= 0) d.meals[i] = m; else d.meals.push(m); }
+      const res = await syncPresetItems(d.week, d.meals, d.items);
+      toast(`${p.title} · ${dates.length === 7 ? 'all 7 days' : dayName}. ${syncText(res)}`);
+      close();
+    } catch (err) { toast(friendlyError(err), true); busy(false); }
+  };
+  const clear = async () => {
+    busy(true);
+    const { error } = await sb.from('meal_plan_items').delete().eq('id', item.id);
+    if (error) { busy(false); return toast(friendlyError(error), true); }
+    d.meals.splice(d.meals.findIndex((m) => m.id === item.id), 1);
+    try { const res = await syncPresetItems(d.week, d.meals, d.items); toast(`Cleared. ${syncText(res)}`); } catch (err) { toast(friendlyError(err), true); }
+    close();
+  };
+  const goPresets = (hash) => { sessionStorage.setItem('presetsBack', '#/week'); location.hash = hash; };
+  const wrap = h('div', { class: `picker ${type}`, role: 'group', 'aria-label': `${label} for ${dayName}` },
+    h('div', { class: 'row spread' }, h('div', { class: 'mlabel' }, `${label} · ${dayName}`), h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close picker' }, '✕')),
+    list.length
+      ? h('div', { class: 'pchips' }, list.map((p) => {
+        const on = item?.preset_id === p.id;
+        const n = ingList(p.ingredients).length;
+        return h('button', { type: 'button', class: `pchip${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false', onclick: () => apply(p) },
+          h('span', { class: 'pt' }, p.title), h('span', { class: 'pm' }, n ? `${n} ingredient${n === 1 ? '' : 's'}` : 'no ingredients'));
+      }))
+      : h('div', { class: 'empty-presets' },
+        h('p', { class: 'small muted' }, `No saved ${label.toLowerCase()}s yet. Save the ones you have most weeks, then pick them here in one tap.`),
+        h('button', { type: 'button', onclick: () => goPresets(`#/presets/new-${type}`) }, `Add your first ${label.toLowerCase()}`)),
+    list.length ? h('label', { class: 'fillweek' }, allDays, h('span', null, 'Fill whole week ', h('span', { class: 'hint' }, 'apply my pick to all 7 days'))) : null,
+    h('div', { class: 'actions' },
+      h('button', { type: 'button', class: 'secondary', onclick: freeText }, 'Type something else'),
+      list.length ? h('button', { type: 'button', class: 'ghost', onclick: () => goPresets('#/presets') }, 'Edit presets') : null,
+      h('span', { class: 'grow' }),
+      item ? h('button', { type: 'button', class: 'ghost danger', onclick: clear }, 'Clear') : null));
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  return wrap;
+}
+
+// Rebuild the shopping rows that come from preset ingredients for one week.
+// Only rows with preset_generated = true are inserted / updated / deleted here; everything else is left alone.
+const ingKey = (name, unit) => `${norm(name)}|${norm(unit)}`;
+async function syncPresetItems(week, meals, items) {
+  const want = new Map();
+  for (const m of meals) {
+    for (const ing of ingList(m.ingredients)) {
+      const name = String(ing.name).trim();
+      const unit = String(ing.unit || '').trim() || null;
+      const k = ingKey(name, unit);
+      const q = ing.quantity === '' || ing.quantity == null ? null : Number(ing.quantity);
+      let w = want.get(k);
+      if (!w) { w = { name, unit, category: ing.category || guessCategory(name), quantity: null, source: m.meal_type }; want.set(k, w); }
+      if (Number.isFinite(q)) w.quantity = Math.round(((w.quantity || 0) + q) * 100) / 100;
+      if (m.meal_type === 'breakfast') w.source = 'breakfast';
+    }
+  }
+  const presetRows = items.filter((i) => i.preset_generated);
+  const otherNames = new Set(items.filter((i) => !i.preset_generated).map((i) => norm(i.name)));
+  const byKey = new Map(presetRows.map((r) => [ingKey(r.name, r.unit), r]));
+  const same = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(Number(a) - Number(b)) < 1e-9);
+  const inserts = []; const updates = []; const skipped = [];
+  for (const [k, w] of want) {
+    const row = byKey.get(k);
+    if (row) {
+      byKey.delete(k);
+      const patch = {};
+      if (!same(row.quantity, w.quantity)) patch.quantity = w.quantity;
+      if (row.source !== w.source) patch.source = w.source;
+      if (Object.keys(patch).length) updates.push([row, patch]);
+      continue;
+    }
+    if (otherNames.has(norm(w.name))) { skipped.push(w.name); continue; } // already on the list from a dinner, staple or by hand
+    inserts.push(w);
+  }
+  const deletes = [...byKey.values()];
+  if (deletes.length) {
+    const { error } = await sb.from('shopping_list_items').delete().in('id', deletes.map((r) => r.id));
+    if (error) throw error;
+    for (const r of deletes) items.splice(items.indexOf(r), 1);
+  }
+  for (const [row, patch] of updates) {
+    const { error } = await sb.from('shopping_list_items').update(patch).eq('id', row.id);
+    if (error) throw error;
+    Object.assign(row, patch);
+  }
+  let added = [];
+  if (inserts.length) {
+    let pos = items.reduce((m, i) => Math.max(m, i.position || 0), 0);
+    const payload = inserts.map((w) => ({ week_id: week.id, name: w.name, quantity: w.quantity, unit: w.unit, category: w.category, store: storeName(), position: ++pos, source: w.source, preset_generated: true }));
+    const { data, error } = await sb.from('shopping_list_items').insert(payload).select();
+    if (error) throw error;
+    added = data || [];
+    items.push(...added);
+  }
+  return { added: added.length, updated: updates.length, removed: deletes.length, skipped };
+}
+function syncText({ added, updated, removed, skipped }) {
+  const parts = [];
+  if (added) parts.push(`${added} added to the list`);
+  if (updated) parts.push(`${updated} quantit${updated === 1 ? 'y' : 'ies'} updated`);
+  if (removed) parts.push(`${removed} removed`);
+  if (skipped.length) parts.push(`${skipped.length} already on the list`);
+  return parts.length ? parts.join(' · ') + '.' : 'Shopping list already up to date.';
 }
 
 function mealEditor(d, date, type, label, item, close) {
@@ -646,7 +830,8 @@ function mealEditor(d, date, type, label, item, close) {
   recipe.value = item?.recipe_id || '';
   const ing = h('textarea', { rows: 3, maxlength: 2000, placeholder: 'Ingredients to add to the shopping list, one per line\nRolled oats\nBlueberries' });
   const save = h('button', { type: 'submit' }, 'Save');
-  const form = h('form', { class: 'meal-edit', onsubmit: async (e) => {
+  const wasPreset = !!(item && (item.preset_id || ingList(item.ingredients).length));
+  const form = h('form', { class: `meal-edit ${type}`, onsubmit: async (e) => {
     e.preventDefault();
     const t = title.value.trim();
     const lines = ing.value.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -654,15 +839,16 @@ function mealEditor(d, date, type, label, item, close) {
     save.disabled = true;
     try {
       const row = { week_id: d.week.id, household_id: S.household.id, date, meal_type: type, title: t, recipe_id: recipe.value || null };
-      const q = item ? sb.from('meal_plan_items').update({ title: row.title, recipe_id: row.recipe_id }).eq('id', item.id) : sb.from('meal_plan_items').insert(row);
+      const q = item ? sb.from('meal_plan_items').update({ title: row.title, recipe_id: row.recipe_id, preset_id: null, ingredients: [] }).eq('id', item.id) : sb.from('meal_plan_items').insert(row);
       const { data, error } = await q.select().single();
       if (error) throw error;
       const i = d.meals.findIndex((m) => m.id === data.id);
       if (i >= 0) d.meals[i] = data; else d.meals.push(data);
       let msg = 'Saved.';
+      if (wasPreset) msg = `Saved. ${syncText(await syncPresetItems(d.week, d.meals, d.items))}`;
       if (lines.length) {
         const res = await addToList(d.week.id, lines.map((name) => ({ name, category: guessCategory(name), source: type, meal_plan_item_id: data.id })), d.items);
-        msg = `Saved. ${listResultText(res)}.`;
+        msg = `${msg} ${listResultText(res)}.`;
       }
       toast(msg);
       close();
@@ -670,16 +856,51 @@ function mealEditor(d, date, type, label, item, close) {
   } },
   h('div', { class: 'mlabel' }, `${label} · ${fmtD(date, { weekday: 'long' })}`),
   title, recipe, ing,
+  wasPreset ? h('p', { class: 'small muted' }, 'Saving free text replaces the saved pick; its ingredients come off the list.') : null,
   h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'secondary', onclick: close }, 'Cancel'), h('span', { class: 'grow' }),
     item ? h('button', { type: 'button', class: 'ghost danger', onclick: async () => {
-      if (!confirm(`Remove ${label.toLowerCase()} on ${fmtD(date, { weekday: 'long' })}? Items already on the shopping list stay there.`)) return;
+      if (!confirm(`Remove ${label.toLowerCase()} on ${fmtD(date, { weekday: 'long' })}? Items you typed in stay on the list; saved-preset items come off.`)) return;
       const { error } = await sb.from('meal_plan_items').delete().eq('id', item.id);
       if (error) return toast(friendlyError(error), true);
       d.meals.splice(d.meals.findIndex((m) => m.id === item.id), 1);
-      toast('Removed.'); close();
+      try { toast(wasPreset ? `Removed. ${syncText(await syncPresetItems(d.week, d.meals, d.items))}` : 'Removed.'); } catch (err) { toast(friendlyError(err), true); }
+      close();
     } }, 'Remove') : null));
   form.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   return form;
+}
+
+/* ---------------- budget (subtle, verified prices only) ---------------- */
+const money = (c) => `$${(c / 100).toFixed(2)}`;
+const moneyShort = (c) => (c % 100 === 0 ? `$${c / 100}` : money(c));
+const hasPrice = (it) => it.price_cents != null && it.price_source && String(it.price_source).trim();
+async function budgetSummary(ws) {
+  const month = ws.slice(0, 7);
+  const budget = S.household?.monthly_budget_cents ?? 35000;
+  const weeks = S.weeks.filter((w) => w.week_start.slice(0, 7) === month);
+  const sum = { month, label: fmtD(ws, { month: 'short' }), budget, spent: 0, unpriced: 0, items: 0, week: { spent: 0, unpriced: 0, items: 0 } };
+  if (!weeks.length) return sum;
+  const { data, error } = await sb.from('shopping_list_items').select('week_id, price_cents, price_source').in('week_id', weeks.map((w) => w.id));
+  if (error) return null;
+  const cur = weeks.find((w) => w.week_start === ws)?.id;
+  for (const it of data || []) {
+    const priced = hasPrice(it);
+    sum.items++; if (priced) sum.spent += it.price_cents; else sum.unpriced++;
+    if (it.week_id === cur) { sum.week.items++; if (priced) sum.week.spent += it.price_cents; else sum.week.unpriced++; }
+  }
+  return sum;
+}
+function budgetBar(sum) {
+  const pct = sum.budget > 0 ? sum.spent / sum.budget : 0;
+  const tone = pct > 1 ? 'over' : pct >= 0.9 ? 'near' : 'ok';
+  const fill = h('span', { class: 'budget-fill' });
+  fill.style.width = `${Math.min(100, Math.round(pct * 1000) / 10)}%`; // CSSOM, allowed by the CSP
+  return h('div', { class: `budget ${tone}`, role: 'group', 'aria-label': 'Monthly grocery budget' },
+    h('div', { class: 'budget-text' },
+      h('span', null, `${sum.label}: `, h('strong', null, money(sum.spent)), ` of ${moneyShort(sum.budget)}`),
+      sum.unpriced ? h('span', { class: 'muted' }, ` · ${sum.unpriced} item${sum.unpriced === 1 ? '' : 's'} unpriced`) : null,
+      tone === 'over' ? h('span', { class: 'budget-flag' }, ` · ${money(sum.spent - sum.budget)} over`) : null),
+    h('span', { class: 'budget-track', 'aria-hidden': 'true' }, fill));
 }
 
 /* ---------------- staples ---------------- */
@@ -708,7 +929,9 @@ async function renderStaples() {
 
   let editingId = null;
   const onList = (s) => items.some((i) => i.staple_id === s.id || norm(i.name) === norm(s.name));
-  const toRow = (s) => ({ name: s.name, quantity: s.quantity ?? null, unit: s.unit || null, category: s.category || 'Other', source: 'staple', staple_id: s.id });
+  // a staple's verified Walmart price (if any) travels with it onto the list so it counts toward the budget
+  const toRow = (s) => ({ name: s.name, quantity: s.quantity ?? null, unit: s.unit || null, category: s.category || 'Other', source: 'staple', staple_id: s.id,
+    ...(hasPrice(s) ? { price_cents: s.price_cents, price_source: s.price_source, price_verified_at: s.price_verified_at || null, walmart_product_url: s.walmart_product_url || null } : {}) });
   const addStaples = async (list, btn) => {
     if (!week) return;
     btn.disabled = true;
@@ -774,7 +997,8 @@ async function renderStaples() {
     const addBtn = week && !there ? h('button', { class: 'ghost add', 'aria-label': `Add ${s.name} to this week’s list` }, 'Add') : null;
     if (addBtn) addBtn.addEventListener('click', () => addStaples([s], addBtn));
     return h('div', { class: `item${s.active ? '' : ' inactive'}` }, cb,
-      h('div', { class: 'grow' }, h('div', { class: 'name' }, s.name), qty ? h('div', { class: 'small muted' }, qty) : null),
+      h('div', { class: 'grow' }, h('div', { class: 'name' }, s.name),
+        qty || hasPrice(s) ? h('div', { class: 'small muted' }, [qty, hasPrice(s) ? `${money(s.price_cents)} at Walmart` : null].filter(Boolean).join(' · ')) : null),
       h('div', { class: 'side' },
         there ? h('span', { class: 'chip on' }, '✓ On list') : addBtn,
         h('button', { class: 'ghost', 'aria-label': `Edit ${s.name}`, onclick: () => { editingId = s.id; draw(); } }, 'Edit')));
@@ -785,12 +1009,12 @@ async function renderStaples() {
     if (!week) { bulkBtn.disabled = true; bulkBtn.textContent = 'Add checked to list'; bulkNote.textContent = 'No shopping list for this week yet. It appears once the meal bot plans the week.'; }
     else if (!staples.length) { bulkBtn.disabled = true; bulkBtn.textContent = 'Add checked to list'; bulkNote.textContent = 'Add a few staples below to get started.'; }
     else if (!pending.length) { bulkBtn.disabled = true; bulkBtn.textContent = 'All checked items are on the list'; bulkNote.textContent = `Adding to the ${weekLabel(ws)} list.`; }
-    else { bulkBtn.disabled = false; bulkBtn.textContent = `Add ${pending.length} checked to list`; bulkNote.textContent = `Adding to the ${weekLabel(ws)} list · ${storeName()}, no prices.`; }
+    else { bulkBtn.disabled = false; bulkBtn.textContent = `Add ${pending.length} checked to list`; bulkNote.textContent = `Adding to the ${weekLabel(ws)} list · ${storeName()}.`; }
     const groups = new Map();
     for (const s of staples) { const k = s.category || 'Other'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); }
     const order = (k) => { const i = STAPLE_CATS.indexOf(k); return i < 0 ? STAPLE_CATS.length - 1.5 : i; }; // custom categories sit just before Other
     const keys = [...groups.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
-    const cards = keys.map((k) => h('section', { class: 'card aisle' }, h('h3', null, k),
+    const cards = keys.map((k) => h('section', { class: `card aisle ${catClass(k)}` }, h('h3', null, h('span', { class: 'aisle-pill' }, k)),
       groups.get(k).sort((a, b) => (a.position || 0) - (b.position || 0) || a.name.localeCompare(b.name)).map(stapleRow)));
     if (!staples.length) cards.push(h('div', { class: 'card muted center' }, 'No staples yet. Add snacks, drinks and household basics you buy most weeks.'));
     listWrap.replaceChildren(...cards);
@@ -913,6 +1137,103 @@ function renderRecipeForm(id) {
     tabbar('recipes'));
 }
 
+/* ---------------- breakfast & lunch presets ---------------- */
+function renderPresets(arg) {
+  const back = sessionStorage.getItem('presetsBack') || '#/settings';
+  const backLink = h('a', { href: back }, back === '#/week' ? '← Back to This week' : '← Back to Settings');
+  if (arg) return renderPresetForm(arg, back);
+  const section = (type, label) => {
+    const list = presetsOf(type);
+    return h('section', { class: `card stack preset-group ${type}` },
+      h('div', { class: 'row spread' }, h('h2', null, h('span', { class: `meal-dot ${type}`, 'aria-hidden': 'true' }), `${label}s`),
+        list.length ? h('a', { class: 'btn small-btn', href: `#/presets/new-${type}` }, `+ Add ${label.toLowerCase()}`) : null),
+      list.length
+        ? list.map((p) => {
+          const ings = ingList(p.ingredients);
+          return h('a', { class: 'preset-row', href: `#/presets/${encodeURIComponent(p.id)}`, 'aria-label': `Edit ${p.title}` },
+            h('div', { class: 'grow' }, h('div', { class: 'name' }, p.title),
+              h('div', { class: 'small muted' }, ings.length ? ings.map(ingText).join(', ') : 'No ingredients yet')),
+            h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
+        })
+        : h('div', { class: 'empty-presets' },
+          h('p', { class: 'small muted' }, type === 'breakfast' ? 'No breakfasts saved yet. Add the ones you eat most weeks, like oatmeal or eggs and toast.' : 'No lunches saved yet. Add your go-to lunches, like sandwiches or leftovers.'),
+          h('a', { class: 'btn block', href: `#/presets/new-${type}` }, `Add your first ${label.toLowerCase()}`)));
+  };
+  mount(topbar('Presets'),
+    h('div', { class: 'content' },
+      h('div', { class: 'row spread' }, backLink),
+      h('p', { class: 'small muted' }, 'Saved breakfasts and lunches. Pick one for a day (or the whole week) on This week, and its ingredients are added to the shopping list, combined across days.'),
+      section('breakfast', 'Breakfast'), section('lunch', 'Lunch')),
+    tabbar('settings'));
+}
+
+function renderPresetForm(arg, back) {
+  const isNew = arg.startsWith('new');
+  const p = isNew ? { meal_type: arg === 'new-lunch' ? 'lunch' : 'breakfast', ingredients: [] } : S.presets.find((x) => x.id === arg);
+  if (!p) {
+    mount(topbar('Preset'), h('div', { class: 'content' }, h('div', { class: 'card stack' }, h('p', null, 'Preset not found.'), h('a', { href: '#/presets' }, '← All presets'))), tabbar('settings'));
+    return;
+  }
+  const title = h('input', { required: true, maxlength: 200, value: p.title || '', placeholder: p.meal_type === 'lunch' ? 'e.g. Turkey sandwiches' : 'e.g. Oatmeal & berries' });
+  const type = h('select', { 'aria-label': 'Meal' }, h('option', { value: 'breakfast' }, 'Breakfast'), h('option', { value: 'lunch' }, 'Lunch'));
+  type.value = p.meal_type;
+  const notes = h('textarea', { rows: 2, maxlength: 2000, placeholder: 'Optional notes' }, p.notes || '');
+  const rowsWrap = h('div', { class: 'ing-rows' });
+  const ingRow = (ing = {}) => {
+    const name = h('input', { maxlength: 200, placeholder: 'Ingredient, e.g. Rolled oats', value: ing.name || '', 'aria-label': 'Ingredient name' });
+    const qty = h('input', { type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: 'Qty per day', value: ing.quantity ?? '', 'aria-label': 'Quantity per day' });
+    const unit = h('input', { maxlength: 40, placeholder: 'Unit', value: ing.unit || '', 'aria-label': 'Unit' });
+    const cat = h('select', { 'aria-label': 'Aisle / category' }, [...new Set([...CATEGORIES, ing.category].filter(Boolean))].map((c) => h('option', { value: c }, c)));
+    cat.value = ing.category || 'Other';
+    name.addEventListener('change', () => { if (!ing.category && cat.value === 'Other') cat.value = guessCategory(name.value); });
+    const el = h('div', { class: 'ing-row' }, name, h('div', { class: 'ing-grid' }, qty, unit, cat,
+      h('button', { type: 'button', class: 'ghost', 'aria-label': 'Remove ingredient', onclick: () => { el.remove(); if (!rowsWrap.children.length) rowsWrap.append(ingRow()); } }, '✕')));
+    el._read = () => ({ name: name.value.trim(), quantity: qty.value === '' ? null : Number(qty.value), unit: unit.value.trim() || null, category: cat.value });
+    return el;
+  };
+  const ings = ingList(p.ingredients);
+  rowsWrap.append(...(ings.length ? ings.map(ingRow) : [ingRow(), ingRow()]));
+  const msg = h('div', { class: 'hidden' });
+  const save = h('button', { type: 'submit', class: 'block' }, isNew ? 'Save preset' : 'Save changes');
+  const form = h('form', { class: `card stack preset-form ${p.meal_type}`, onsubmit: async (e) => {
+    e.preventDefault();
+    const row = {
+      title: title.value.trim(), meal_type: type.value, notes: notes.value.trim() || null,
+      ingredients: [...rowsWrap.children].map((el) => el._read()).filter((i) => i.name),
+    };
+    if (!row.title) { msg.className = 'msg error'; msg.textContent = 'Give it a name.'; title.focus(); return; }
+    if (row.ingredients.some((i) => i.quantity != null && !(i.quantity >= 0))) { msg.className = 'msg error'; msg.textContent = 'Quantities must be zero or more.'; return; }
+    save.disabled = true;
+    const q = isNew
+      ? sb.from('meal_presets').insert({ ...row, household_id: S.household.id, position: S.presets.reduce((m, x) => Math.max(m, x.position || 0), 0) + 1 })
+      : sb.from('meal_presets').update(row).eq('id', p.id);
+    const { error } = await q.select().single();
+    save.disabled = false;
+    if (error) { msg.className = 'msg error'; msg.textContent = error.code === '23505' ? 'You already have a preset with that name.' : friendlyError(error); return; }
+    await refreshPresets();
+    toast(isNew ? 'Preset saved.' : 'Saved.');
+    location.hash = back === '#/week' && isNew ? '#/week' : '#/presets';
+  } },
+  msg,
+  h('label', null, 'Name', title),
+  h('label', null, 'Meal', type),
+  h('div', { class: 'stack' }, h('div', { class: 'label-like' }, 'Ingredients ', h('span', { class: 'hint' }, 'amount for one day; picking several days adds them up')), rowsWrap,
+    h('button', { type: 'button', class: 'secondary', onclick: () => { const r = ingRow(); rowsWrap.append(r); r.querySelector('input').focus(); } }, '+ Add ingredient')),
+  h('label', null, 'Notes', notes),
+  !isNew ? h('p', { class: 'small muted' }, 'Days you already picked keep the ingredients they had. Pick the preset again to use these changes.') : null,
+  save,
+  !isNew ? h('button', { type: 'button', class: 'ghost danger block', onclick: async () => {
+    if (!confirm(`Delete “${p.title}”? Days already planned with it, and their shopping items, stay as they are.`)) return;
+    const { error } = await sb.from('meal_presets').delete().eq('id', p.id);
+    if (error) return toast(friendlyError(error), true);
+    await refreshPresets(); toast('Preset deleted.'); location.hash = '#/presets';
+  } }, 'Delete preset') : null);
+  mount(topbar(isNew ? `New ${p.meal_type}` : 'Edit preset'),
+    h('div', { class: 'content' }, h('div', { class: 'row spread' }, h('a', { href: '#/presets' }, '← All presets')), form),
+    tabbar('settings'));
+  if (isNew) title.focus();
+}
+
 /* ---------------- settings ---------------- */
 function renderSettings() {
   const hh = S.household;
@@ -926,6 +1247,7 @@ function renderSettings() {
       h('option', { value: 'solo' }, 'One approval is enough (solo)')),
     dietary_exclusions: h('input', { placeholder: 'seafood, mushrooms', value: (hh.dietary_exclusions || []).join(', ') }),
     preferred_stores: h('input', { placeholder: 'Walmart', value: (hh.preferred_stores || []).join(', ') }),
+    monthly_budget: h('input', { type: 'number', min: 0, max: 100000, step: 1, inputmode: 'decimal', value: ((hh.monthly_budget_cents ?? 35000) / 100).toString(), 'aria-label': 'Monthly grocery budget in dollars' }),
   };
   f.approval_mode.value = hh.approval_mode;
   const msg = h('div', { class: 'hidden' });
@@ -939,7 +1261,11 @@ function renderSettings() {
       approval_mode: f.approval_mode.value,
       dietary_exclusions: listToArr(f.dietary_exclusions.value),
       preferred_stores: listToArr(f.preferred_stores.value),
+      monthly_budget_cents: f.monthly_budget.value.trim() === '' ? null : Math.round(Number(f.monthly_budget.value) * 100),
     };
+    if (row.monthly_budget_cents == null || !Number.isFinite(row.monthly_budget_cents) || row.monthly_budget_cents < 0) {
+      msg.className = 'msg error'; msg.textContent = 'Monthly budget should be a dollar amount, like 350.'; return;
+    }
     if ([row.dinners_per_week, row.leftover_nights_per_week, row.default_plates].some((v) => v == null)) {
       msg.className = 'msg error'; msg.textContent = 'Please fill in all the numbers.'; return;
     }
@@ -959,7 +1285,15 @@ function renderSettings() {
   h('label', null, 'Approval mode', f.approval_mode),
   h('label', null, h('span', null, 'Dietary exclusions ', h('span', { class: 'hint' }, 'comma separated')), f.dietary_exclusions),
   h('label', null, h('span', null, 'Preferred stores ', h('span', { class: 'hint' }, 'comma separated')), f.preferred_stores),
+  h('label', null, h('span', null, 'Monthly grocery budget ', h('span', { class: 'hint' }, 'dollars, shown as a slim bar on This week and Shopping')),
+    h('div', { class: 'money-input' }, h('span', { 'aria-hidden': 'true' }, '$'), f.monthly_budget)),
   save);
+
+  const nB = presetsOf('breakfast').length; const nL = presetsOf('lunch').length;
+  const presetsCard = h('section', { class: 'card stack tint-meals' }, h('h2', null, 'Breakfast & lunch presets'),
+    h('p', { class: 'small muted' }, nB + nL ? `${nB} breakfast${nB === 1 ? '' : 's'} and ${nL} lunch${nL === 1 ? '' : 'es'} saved. Pick them on This week in one tap; their ingredients go to the shopping list.`
+      : 'Save the breakfasts and lunches you have most weeks, with their ingredients, so you never have to type them again.'),
+    h('a', { class: 'btn block', href: '#/presets', onclick: () => sessionStorage.setItem('presetsBack', '#/settings') }, nB + nL ? 'Edit presets' : 'Add your first breakfast'));
 
   const membersCard = h('section', { class: 'card stack' }, h('h2', null, 'Members'),
     S.members.map((m) => h('div', { class: 'row spread' },
@@ -969,6 +1303,7 @@ function renderSettings() {
   mount(topbar('Settings'),
     h('div', { class: 'content' },
       form,
+      presetsCard,
       membersCard,
       h('section', { class: 'card stack' }, h('h2', null, 'Account'),
         h('div', { class: 'small' }, 'Signed in as ', h('strong', null, S.session.user.email), isOwner ? ' · household owner' : ''),
@@ -983,6 +1318,8 @@ document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !S.member) return;
   const { view, arg } = route();
   if (view === 'recipes' && arg) return; // don't clobber an open form
+  if (view === 'presets') return;
+  if (appEl.querySelector('.picker')) return; // the preset picker is open
   if (view === 'settings') return;
   if (appEl.querySelector('.meal-edit')) return; // an inline editor is open
   const ae = document.activeElement;

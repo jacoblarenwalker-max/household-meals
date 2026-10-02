@@ -13,24 +13,35 @@ backed by a Supabase project.
   voter's vote and comment, and who still needs to vote. You can **Approve** or mark **Needs work** with a comment.
   Voting is disabled once the week is locked. The database decides when a week locks (every voter approves in
   `multi` mode).
-  - **Breakfast & lunch**: one simple line per day for each (table `meal_plan_items`). Free text, optional recipe link,
-    and an "ingredients to add to the shopping list" box (one per line). No voting, and editable even when the week is
-    locked. Ingredient lines land in `shopping_list_items` with `source = 'breakfast' | 'lunch'` and
-    `meal_plan_item_id`; lines already on the list are skipped.
+  - **Breakfast & lunch**: one simple line per day for each (table `meal_plan_items`). Tap a line to pick a saved
+    **preset** in one tap (optionally "Fill whole week"), or type something else (free text, optional recipe link and
+    ingredient lines). No voting, and editable even when the week is locked. Preset ingredients are per day and are
+    summed across the days they're picked, then written as consolidated `shopping_list_items` rows with
+    `preset_generated = true` (rebuilt whenever picks change; names already on the list from other sources are skipped).
+    Free-text ingredient lines land with `source = 'breakfast' | 'lunch'` and `meal_plan_item_id`.
+  - If a week has no plan yet, **Start planning this week** creates a draft week so breakfasts/lunches can be added.
+  - A slim **monthly budget bar** shows priced list totals for weeks starting in that month against the budget.
 - **Shopping**: the selected week's list grouped by aisle/category, with dinner, breakfast/lunch and staple items
   together and a small source label. Check items off, add or remove items. Prices only show when the row has both
-  `price_cents` and `price_source`.
+  `price_cents` and `price_source`; the product line links to `walmart_product_url` when set. Shows the week's total
+  and the monthly budget bar.
 - **Staples**: snacks, drinks, breakfast basics and household items bought outside of meals (table `staples`), grouped by
   category. Add / edit / remove, check the ones you want, then **Add N checked to list** (or **Add** per item). Adds go
-  to the selected week's list (Walmart, no prices) with `source = 'staple'`; a staple is never added twice to the same week.
+  to the selected week's list (Walmart) with `source = 'staple'`, copying the staple's price fields if it has them; a
+  staple is never added twice to the same week.
 - **Recipes**: search, add and edit household recipes.
 - **Settings**: dinners per week, leftover nights, default plates, approval mode, dietary exclusions, preferred
-  stores. Also lists members and lets you sign out.
+  stores, **monthly grocery budget** (`households.monthly_budget_cents`, default $350), and a link to
+  **Breakfast & lunch presets** (`#/presets`: add/edit/delete presets with per-day ingredients). Also lists members
+  and lets you sign out.
 - **Check now** (This week and Shopping screens): inserts an `app_events` row (`check_now`) asking the meal bot to sync.
   The browser never calls any other service.
 
-Schema changes for breakfast/lunch and staples are in `supabase/migrations/` (applied to the project as
-`add_staples`, `add_meal_plan_items`, `shopping_list_items_source`).
+Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
+`shopping_list_items_source`, `budget_and_prices`, `meal_presets`).
+
+Icons: `icon.svg` (any), `icon-maskable.svg`, PNG exports `icon-192.png`, `icon-512.png`, `icon-maskable-192.png`,
+`icon-maskable-512.png` and `apple-touch-icon.png` (180×180), wired into `index.html` and `manifest.webmanifest`.
 
 ## Security
 
