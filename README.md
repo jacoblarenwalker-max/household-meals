@@ -68,6 +68,10 @@ backed by a Supabase project.
     the list. `is_weekly` is separate from the per-item checkbox (`active`), which still drives **Add N checked to
     list**. Milk and eggs start out weekly. Staple rows are never removed by dinner rebuilds (only `source` null or
     `dinner` rows are).
+  - On **Shopping**, a beige reminder card near the top lists weekly staples that aren't on the selected week's list
+    yet ("2 weekly staples aren't on the list: Milk, Eggs- 16 count") with **Add them** (same logic as Add weekly
+    staples: no duplicates, toast with Undo, budget and week total update) and a **See all staples** link. Once
+    they're all on the list it shrinks to a small "✓ Weekly staples added" line; with no weekly staples it's hidden.
 - **Recipes**: search, add and edit household recipes, including a **Short description** (`recipes.description`, one
   plain line under ~60 characters, max 120) that This week shows under the dinner name. Tap the ☆ star on a recipe (or **Add to favorites** on its
   page or in the Swap picker) to make it a go-to dinner.

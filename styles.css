@@ -483,3 +483,16 @@ label.check-line input[type=checkbox] { width: 22px; height: 22px; min-height: 0
 .toast.has-action { display: flex; align-items: center; gap: 14px; pointer-events: auto; padding: 8px 8px 8px 18px; }
 .toast-action { min-height: 36px; padding: 6px 14px; border-radius: 10px; background: var(--sky); color: var(--navy); border: 1px solid var(--sky-edge); font-weight: 800; }
 .toast-action:hover { background: var(--sky-hover); color: var(--navy); }
+
+/* shopping: weekly staples reminder */
+.remind-slot:empty { display: none; }
+.weekly-remind { display: grid; gap: 12px; padding: 16px; background: var(--beige); border: 1px solid var(--tan); }
+.remind-text { color: var(--ink); line-height: 1.45; }
+.remind-text strong { font-weight: 750; }
+.remind-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.remind-actions button.weekly-btn { min-height: 48px; padding: 10px 22px; font-size: 1rem; }
+.remind-actions a, .weekly-done a { color: var(--sky-deep); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.remind-actions a:hover, .weekly-done a:hover { color: var(--navy); }
+.weekly-done { display: flex; align-items: center; gap: 6px; margin: 0; padding: 8px 14px; color: var(--muted); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px; }
+.weekly-done .tick { color: var(--green); font-weight: 800; }
+.remind-actions button.weekly-btn:disabled { opacity: .6; background: var(--sky); color: var(--navy); border-color: var(--sky-edge); }
