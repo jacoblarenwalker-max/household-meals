@@ -302,7 +302,7 @@ async function loadWeekData(ws) {
     sb.from('week_slots').select('*, recipe:recipes(id, title, description, source_url, source_name)').eq('week_id', week.id).order('date').order('position'),
     sb.from('votes').select('*').eq('week_id', week.id),
     sb.from('meal_plan_items').select('*').eq('week_id', week.id).order('date'),
-    sb.from('shopping_list_items').select('id, name, quantity, unit, category, source, position, checked, meal_plan_item_id, staple_id, preset_generated, price_cents, price_source').eq('week_id', week.id),
+    sb.from('shopping_list_items').select('id, name, quantity, unit, category, source, position, checked, meal_plan_item_id, staple_id, preset_generated, price_cents, price_source, recipe_id, meal_shares').eq('week_id', week.id),
   ]);
   for (const r of [slots, votes, meals, items]) if (r.error) throw r.error;
   return { week, slots: slots.data, votes: votes.data, meals: meals.data || [], items: items.data || [] };
@@ -352,6 +352,51 @@ function dayBadge(date) {
   return h('div', { class: `day wd${wd}` }, h('div', { class: 'dow' }, fmtD(date, { weekday: 'short' })), h('div', { class: 'dom' }, fmtD(date, { day: 'numeric' })));
 }
 
+// what each dinner costs, from this week's dinner rows on the shopping list (verified prices only).
+// A row with recipe_id belongs to that recipe; a shared row splits its price by meal_shares
+// ([{recipe_id, share}]). Leftover nights get nothing, so no meal is counted twice.
+function dinnerCosts(slots, items) {
+  const cooked = slots.filter((s) => !s.is_leftover_night && s.recipe_id);
+  const byRecipe = {};
+  for (const s of cooked) (byRecipe[s.recipe_id] ||= []).push(s.id);
+  const cost = Object.fromEntries(cooked.map((s) => [s.id, { cents: 0, items: 0, unpriced: 0 }]));
+  const loose = { cents: 0, items: 0, unpriced: 0 };
+  const isDinnerRow = (it) => (it.source == null || it.source === 'dinner') && !it.preset_generated && !it.meal_plan_item_id && !it.staple_id;
+  for (const it of items.filter(isDinnerRow)) {
+    const shares = Array.isArray(it.meal_shares) && it.meal_shares.length ? it.meal_shares
+      : it.recipe_id ? [{ recipe_id: it.recipe_id, share: 1 }] : [];
+    const priced = hasPrice(it);
+    let placed = 0;
+    for (const sh of shares) {
+      const ids = byRecipe[sh.recipe_id];
+      const share = Number(sh.share) || 0;
+      if (!ids || share <= 0) continue;
+      placed += share;
+      for (const id of ids) { // same recipe twice in a week: split evenly
+        const c = cost[id]; c.items++;
+        if (priced) c.cents += (it.price_cents * share) / ids.length; else c.unpriced++;
+      }
+    }
+    if (placed < 0.999) { // not (fully) tied to a planned dinner
+      loose.items++;
+      if (priced) loose.cents += it.price_cents * (1 - placed); else loose.unpriced++;
+    }
+  }
+  for (const c of Object.values(cost)) c.cents = Math.round(c.cents);
+  loose.cents = Math.round(loose.cents);
+  return { cost, loose };
+}
+function costTag(c) {
+  if (!c || !c.items) return null;
+  if (!c.cents && c.unpriced) return h('span', { class: 'chip cost none', title: 'Prices not checked yet' }, 'not priced yet');
+  const partial = c.unpriced > 0;
+  return h('span', {
+    class: `chip cost${partial ? ' partial' : ''}`,
+    title: partial ? `${c.unpriced} item${c.unpriced === 1 ? '' : 's'} not priced yet` : 'Shopping cost for this dinner (Walmart prices)',
+    'aria-label': partial ? `About ${money(c.cents)} or more, ${c.unpriced} item${c.unpriced === 1 ? '' : 's'} not priced yet` : `Costs ${money(c.cents)}`,
+  }, partial ? `~${money(c.cents)}+` : money(c.cents));
+}
+
 function nightsCard(ws, d) {
   const slots = d.slots;
   const today = todayISO();
@@ -359,6 +404,7 @@ function nightsCard(ws, d) {
   const head = h('div', { class: 'card-head' }, h('h2', null, 'Dinners'));
   let picking = null; // slot id with the favorites picker open
   let detail = null;  // slot id with the cooking-notes panel open
+  const { cost, loose } = dinnerCosts(slots, d.items || []);
   const draw = () => {
     const byId = Object.fromEntries(slots.map((s) => [s.id, s]));
     const rows = [];
@@ -400,12 +446,15 @@ function nightsCard(ws, d) {
         return h('div', { class: 'stack' },
           h('div', { class: 'title' }, title),
           desc,
-          h('div', { class: 'meta' }, pill, h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)));
+          h('div', { class: 'meta' }, pill, s.is_leftover_night ? null : costTag(cost[s.id]), h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)));
       });
       rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, h('div', { class: 'daycol' }, dayCol, swaps), h('div', { class: 'stack' }, body), pickerEl));
       pickerEl = null;
     }
-    card.replaceChildren(head, ...rows);
+    const foot = loose.items ? h('p', { class: 'small muted dinner-foot' },
+      `${loose.items} shared item${loose.items === 1 ? ' isn’t' : 's aren’t'} split by meal yet`,
+      loose.cents ? ` (${money(loose.cents)}${loose.unpriced ? '+' : ''})` : '', '.') : null;
+    card.replaceChildren(head, ...rows, foot);
   };
   draw();
   return card;

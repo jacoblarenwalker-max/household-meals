@@ -11,7 +11,13 @@ backed by a Supabase project.
 - **This week**: pick a week (weeks start Monday, America/Denver). Each night shows the dinner name, a one-line
   description in muted text (`recipes.description`, skipped on leftover nights), then a leftover pill and the plate
   count. Tap the dinner name for its **Cooking notes** (the bot's `week_slots.notes`: batch size, swaps, what to save
-  for later) with **Open recipe ↗** and **Recipe details** links. The page also shows the week's status (draft / voting / needs work / locked), each
+  for later) with **Open recipe ↗** and **Recipe details** links. Each cooked dinner also gets a small beige **cost tag** (e.g. `$5.18`): the
+  shopping cost of that meal from the week's dinner rows on the list, using only verified prices (`price_cents` +
+  `price_source`). A row with `recipe_id` counts fully toward that recipe; a row shared by several dinners carries
+  `meal_shares` (`[{"recipe_id": …, "share": 0.5}, …]`, fractions of its price) and is split that way. If some of a
+  meal's rows aren't priced the tag reads `~$X+`; leftover nights show no price, so nothing is counted twice; dinner
+  rows not tied to a planned dinner are summed in a small note under the dinners. The meal bot's dinner-list rebuild
+  should set `meal_shares` on the shared rows it writes. The page also shows the week's status (draft / voting / needs work / locked), each
   voter's vote and comment, and who still needs to vote. You can **Approve** or mark **Needs work** with a comment.
   Voting is disabled once the week is locked. The database decides when a week locks (every voter approves in
   `multi` mode).
@@ -67,7 +73,7 @@ backed by a Supabase project.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and
