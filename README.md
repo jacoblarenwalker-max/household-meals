@@ -8,8 +8,10 @@ backed by a Supabase project.
 
 ## Screens
 
-- **This week**: pick a week (weeks start Monday, America/Denver). Shows each night's dinner with a link to the
-  recipe source, plates, and leftover badges, plus the week's status (draft / voting / needs work / locked), each
+- **This week**: pick a week (weeks start Monday, America/Denver). Each night shows the dinner name, a one-line
+  description in muted text (`recipes.description`, skipped on leftover nights), then a leftover pill and the plate
+  count. Tap the dinner name for its **Cooking notes** (the bot's `week_slots.notes`: batch size, swaps, what to save
+  for later) with **Open recipe ↗** and **Recipe details** links. The page also shows the week's status (draft / voting / needs work / locked), each
   voter's vote and comment, and who still needs to vote. You can **Approve** or mark **Needs work** with a comment.
   Voting is disabled once the week is locked. The database decides when a week locks (every voter approves in
   `multi` mode).
@@ -38,17 +40,34 @@ backed by a Supabase project.
   category. Add / edit / remove, check the ones you want, then **Add N checked to list** (or **Add** per item). Adds go
   to the selected week's list (Walmart) with `source = 'staple'`, copying the staple's price fields if it has them; a
   staple is never added twice to the same week.
-- **Recipes**: search, add and edit household recipes. Tap the ☆ star on a recipe (or **Add to favorites** on its
+- **Recipes**: search, add and edit household recipes, including a **Short description** (`recipes.description`, one
+  plain line under ~60 characters, max 120) that This week shows under the dinner name. Tap the ☆ star on a recipe (or **Add to favorites** on its
   page or in the Swap picker) to make it a go-to dinner.
 - **Settings**: dinners per week, leftover nights, default plates, approval mode, dietary exclusions, preferred
   stores, **monthly grocery budget** (`households.monthly_budget_cents`, default $350), and a link to
-  **Breakfast & lunch presets** (`#/presets`: add/edit/delete presets with per-day ingredients). Also lists members
-  and lets you sign out.
+  **Breakfast & lunch presets** (`#/presets`: add/edit/delete presets with per-day ingredients). Also lists members,
+  **Notifications** (below), and lets you sign out.
+- **Notifications** (Web Push, Settings → Notifications): **Turn on notifications** asks for permission, subscribes
+  this browser with the app's VAPID public key (`config.js`) and saves the subscription in `push_subscriptions`
+  (RLS: each user only sees and changes their own rows). **Send a test notification** pushes to your own devices;
+  **Turn off on this device** unsubscribes and deletes the row (signing out does the same). Notifications go out for:
+  a dinner **swap** on a week that isn't a draft (not to the person who swapped), **needs work** (not to the voter),
+  and **week locked** (not to the last approver). Tapping one opens `./?week=YYYY-MM-DD#/week`.
+  - iPhone/iPad: needs iOS/iPadOS 16.4+. In Safari, Share → **Add to Home Screen**, open **Meals** from the Home
+    Screen, sign in, then Settings → Turn on notifications → Allow. (Safari tabs can't receive web push.)
+  - How it's wired: an AFTER INSERT trigger on `app_events` (`private.app_events_push_notify`) calls the Edge Function
+    `push-notify` through `pg_net` with a shared secret from Supabase Vault (`push_webhook_secret`). The function
+    (`supabase/functions/push-notify/`, plain WebCrypto, no paid services) signs VAPID JWTs and encrypts payloads
+    (RFC 8291 aes128gcm) with the private key kept in Vault (`push_vapid_private_jwk`; created inside Supabase by the
+    function's one-time `init`, never stored in the repo). Each event is sent once (`push_notified_events`), and
+    subscriptions the push service reports as gone (404/410) are deleted. The trigger never blocks a vote or a swap.
+  - `sw.js` is only a push service worker: it shows notifications and handles taps. It doesn't cache anything.
 - **Check now** (This week and Shopping screens): inserts an `app_events` row (`check_now`) asking the meal bot to sync.
-  The browser never calls any other service.
+  Besides the Supabase API, the browser only talks to its own push service when you turn notifications on.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
-`shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`).
+`shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
+`push_and_descriptions`, `recipe_descriptions`).
 
 Icons: `icon.svg` (any), `icon-maskable.svg`, PNG exports `icon-192.png`, `icon-512.png`, `icon-maskable-192.png`,
 `icon-maskable-512.png` and `apple-touch-icon.png` (180×180), wired into `index.html` and `manifest.webmanifest`.

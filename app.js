@@ -1,5 +1,5 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ } from './config.js';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -110,7 +110,29 @@ window.addEventListener('hashchange', () => render());
 
 /* ---------------- boot ---------------- */
 let booted = false;
+// notification links look like ./?week=2026-10-05#/week: open that week, then tidy the address bar
+function takeWeekParam(href) {
+  let u; try { u = new URL(href, location.href); } catch { return false; }
+  const w = u.searchParams.get('week');
+  if (!w || !/^\d{4}-\d{2}-\d{2}$/.test(w) || Number.isNaN(parseD(w).getTime())) return false;
+  S.weekStart = mondayOf(w);
+  sessionStorage.setItem('weekStart', S.weekStart);
+  return true;
+}
+if (takeWeekParam(location.href)) history.replaceState(null, '', location.pathname + (location.hash || '#/week'));
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker', e));
+  // tapping a notification while the app is already open
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type !== 'open' || !S.member) return;
+    takeWeekParam(e.data.url);
+    const hash = new URL(e.data.url, location.href).hash || '#/week';
+    if (location.hash !== hash) location.hash = hash; else render();
+  });
+}
 async function boot() {
+  registerServiceWorker();
   const { data } = await sb.auth.getSession();
   S.session = data.session;
   sb.auth.onAuthStateChange((event, session) => {
@@ -277,7 +299,7 @@ async function loadWeekData(ws) {
   if (error) throw error;
   if (!week) return { week: null, slots: [], votes: [], meals: [], items: [] };
   const [slots, votes, meals, items] = await Promise.all([
-    sb.from('week_slots').select('*, recipe:recipes(id, title, source_url, source_name)').eq('week_id', week.id).order('date').order('position'),
+    sb.from('week_slots').select('*, recipe:recipes(id, title, description, source_url, source_name)').eq('week_id', week.id).order('date').order('position'),
     sb.from('votes').select('*').eq('week_id', week.id),
     sb.from('meal_plan_items').select('*').eq('week_id', week.id).order('date'),
     sb.from('shopping_list_items').select('id, name, quantity, unit, category, source, position, checked, meal_plan_item_id, staple_id, preset_generated, price_cents, price_source').eq('week_id', week.id),
@@ -336,6 +358,7 @@ function nightsCard(ws, d) {
   const card = h('section', { class: 'card tint-dinner', id: 'dinners' });
   const head = h('div', { class: 'card-head' }, h('h2', null, 'Dinners'));
   let picking = null; // slot id with the favorites picker open
+  let detail = null;  // slot id with the cooking-notes panel open
   const draw = () => {
     const byId = Object.fromEntries(slots.map((s) => [s.id, s]));
     const rows = [];
@@ -352,9 +375,16 @@ function nightsCard(ws, d) {
       const body = daySlots.map((s) => {
         const from = s.leftover_from_slot_id ? byId[s.leftover_from_slot_id] : null;
         const recipe = s.recipe || from?.recipe || null;
-        const url = recipe?.source_url ? safeUrl(recipe.source_url) : null;
-        const title = recipe ? (url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', title: recipe.source_name ? `Open on ${recipe.source_name}` : null }, recipe.title) : recipe.title)
-          : (s.is_leftover_night ? 'Leftovers' : 'Dinner TBD');
+        const name = recipe ? recipe.title : (s.is_leftover_night ? 'Leftovers' : 'Dinner TBD');
+        const showing = detail === s.id;
+        const hasDetail = !!(recipe || s.notes);
+        // tap the meal name for cooking notes and recipe links (kept off the main list so it stays short)
+        const title = hasDetail ? h('button', {
+          type: 'button', class: `title-btn${showing ? ' on' : ''}`, 'aria-expanded': showing ? 'true' : 'false',
+          onclick: () => { detail = showing ? null : s.id; picking = null; draw(); },
+        }, name) : name;
+        // one short line about the meal itself; leftover nights skip it
+        const desc = !s.is_leftover_night && recipe?.description ? h('div', { class: 'desc' }, recipe.description) : null;
         // one clean secondary line: a single solid pill when it matters, then the plate count
         const pill = s.is_leftover_night ? h('span', { class: 'chip left' }, from ? `Leftovers from ${fmtD(from.date, { weekday: 'long' })}` : 'Leftover night')
           : s.makes_leftovers ? h('span', { class: 'chip makes' }, 'Makes leftovers') : null;
@@ -362,14 +392,15 @@ function nightsCard(ws, d) {
         const swap = h('button', {
           type: 'button', class: `ghost swap${open ? ' on' : ''}`, 'aria-expanded': open ? 'true' : 'false',
           'aria-label': `Swap ${fmtD(s.date, { weekday: 'long' })}’s dinner for a favorite`,
-          onclick: () => { picking = open ? null : s.id; draw(); if (!open) card.querySelector('.dpicker input, .dpicker button')?.focus(); },
+          onclick: () => { picking = open ? null : s.id; detail = null; draw(); if (!open) card.querySelector('.dpicker input, .dpicker button')?.focus(); },
         }, 'Swap');
         swaps.push(swap);
         if (open) pickerEl = dinnerPicker(d, s, recipe, () => { picking = null; draw(); });
-        return h('div', { class: 'stack', style: null },
+        else if (showing) pickerEl = dinnerDetail(s, recipe, () => { detail = null; draw(); });
+        return h('div', { class: 'stack' },
           h('div', { class: 'title' }, title),
-          h('div', { class: 'meta' }, pill, h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)),
-          s.notes ? h('div', { class: 'note' }, s.notes) : null);
+          desc,
+          h('div', { class: 'meta' }, pill, h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)));
       });
       rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, h('div', { class: 'daycol' }, dayCol, swaps), h('div', { class: 'stack' }, body), pickerEl));
       pickerEl = null;
@@ -378,6 +409,22 @@ function nightsCard(ws, d) {
   };
   draw();
   return card;
+}
+
+// inline panel under a dinner: the bot's cooking notes plus links to the recipe
+function dinnerDetail(slot, recipe, close) {
+  const dayName = fmtD(slot.date, { weekday: 'long' });
+  const url = recipe?.source_url ? safeUrl(recipe.source_url) : null;
+  const panel = h('div', { class: 'picker dinner ddetail', role: 'group', 'aria-label': `${dayName} dinner details` },
+    h('div', { class: 'row spread' }, h('div', { class: 'mlabel' }, `${dayName} · ${recipe ? recipe.title : 'Dinner'}`), h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close details' }, '✕')),
+    recipe?.description ? h('p', { class: 'small muted' }, recipe.description) : null,
+    h('div', { class: 'mlabel sub' }, 'Cooking notes'),
+    slot.notes ? h('div', { class: 'cooknotes' }, slot.notes) : h('p', { class: 'small muted' }, 'No cooking notes for this night.'),
+    recipe ? h('div', { class: 'row links' },
+      url ? h('a', { class: 'btn small-btn', href: url, target: '_blank', rel: 'noopener noreferrer' }, `Open recipe${recipe.source_name ? ` on ${recipe.source_name}` : ''} ↗`) : null,
+      h('a', { class: 'btn secondary small-btn', href: `#/recipes/${encodeURIComponent(recipe.id)}` }, 'Recipe details')) : null);
+  panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  return panel;
 }
 
 /* ---------------- favorites (go-to dinners) ---------------- */
@@ -1161,12 +1208,13 @@ function renderRecipes() {
   const draw = () => {
     const term = q.value.trim().toLowerCase();
     sessionStorage.setItem('recipeQ', q.value);
-    const rs = S.recipes.filter((r) => !term || [r.title, r.source_name, ...(r.tags || [])].join(' ').toLowerCase().includes(term));
+    const rs = S.recipes.filter((r) => !term || [r.title, r.description, r.source_name, ...(r.tags || [])].join(' ').toLowerCase().includes(term));
     list.replaceChildren(...(rs.length ? rs.map((r) => {
       const mins = (r.prep_minutes || 0) + (r.cook_minutes || 0);
       return h('div', { class: 'recipe-item' },
         h('a', { class: 'card recipe-card', href: `#/recipes/${encodeURIComponent(r.id)}` },
           h('div', { class: 'title' }, r.title),
+          r.description ? h('div', { class: 'desc' }, r.description) : null,
           h('div', { class: 'small muted' }, [r.source_name, mins ? `${mins} min` : null, r.servings ? `serves ${r.servings}` : null].filter(Boolean).join(' · ')),
           r.tags?.length ? h('div', { class: 'row wrap', style: null }, r.tags.map((t) => h('span', { class: 'chip tag' }, t))) : null),
         starButton(r));
@@ -1193,6 +1241,7 @@ function renderRecipeForm(id) {
   const originalIngText = (r.ingredients || []).map(ingredientLine).join('\n');
   const f = {
     title: h('input', { required: true, maxlength: 200, value: r.title || '' }),
+    description: h('input', { maxlength: 80, placeholder: 'e.g. Cheesy baked spaghetti made in one skillet', value: r.description || '' }),
     source_name: h('input', { maxlength: 120, placeholder: 'e.g. Mel’s Kitchen Cafe', value: r.source_name || '' }),
     source_url: h('input', { type: 'url', inputmode: 'url', placeholder: 'https://…', value: r.source_url || '' }),
     servings: h('input', { type: 'number', min: 1, inputmode: 'numeric', value: r.servings ?? '' }),
@@ -1219,6 +1268,7 @@ function renderRecipeForm(id) {
     const ingText = f.ingredients.value.replace(/\r/g, '');
     const row = {
       title: f.title.value.trim(),
+      description: f.description.value.trim() || null,
       source_name: f.source_name.value.trim() || null,
       source_url: srcUrl || null,
       servings: intOrNull(f.servings.value),
@@ -1242,6 +1292,7 @@ function renderRecipeForm(id) {
   } },
   msg,
   h('label', null, 'Title *', f.title),
+  h('label', null, h('span', null, 'Short description ', h('span', { class: 'hint' }, 'one line, shown on This week')), f.description),
   h('div', { class: 'grid2' }, h('label', null, 'Source', f.source_name), h('label', null, 'Servings', f.servings)),
   h('label', null, 'Source URL', f.source_url),
   h('div', { class: 'grid2' }, h('label', null, 'Prep minutes', f.prep_minutes), h('label', null, 'Cook minutes', f.cook_minutes)),
@@ -1355,6 +1406,109 @@ function renderPresetForm(arg, back) {
   if (isNew) title.focus();
 }
 
+/* ---------------- push notifications ---------------- */
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches;
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+function b64urlToBytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0));
+}
+async function swRegistration() {
+  if (!('serviceWorker' in navigator)) return null;
+  const reg = (await navigator.serviceWorker.getRegistration()) || (await navigator.serviceWorker.register('sw.js'));
+  return reg;
+}
+async function currentPushSub() {
+  try { const reg = await swRegistration(); return reg ? await reg.pushManager.getSubscription() : null; } catch { return null; }
+}
+async function savePushSub(sub) {
+  const j = sub.toJSON();
+  const row = { user_id: S.session.user.id, household_id: S.household.id, endpoint: j.endpoint, keys: { p256dh: j.keys.p256dh, auth: j.keys.auth }, user_agent: navigator.userAgent.slice(0, 300) };
+  const { error } = await sb.from('push_subscriptions').upsert(row, { onConflict: 'endpoint' });
+  if (error) throw error;
+}
+// best effort: this device stops getting this account's notifications (used on sign out)
+async function forgetPushSub() {
+  const sub = await currentPushSub();
+  if (!sub) return;
+  try { await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint); } catch { /* ignore */ }
+  try { await sub.unsubscribe(); } catch { /* ignore */ }
+}
+function notificationsCard() {
+  const body = h('div', { class: 'stack' }, h('p', { class: 'small muted' }, 'Checking this device…'));
+  const card = h('section', { class: 'card stack', id: 'notifications' }, h('h2', null, 'Notifications'),
+    h('p', { class: 'small muted' }, 'Get a notification on this device when someone swaps a dinner, asks for changes, or everyone approves the week.'),
+    body);
+  const note = (text, cls = 'small muted') => h('p', { class: cls }, text);
+  const draw = async () => {
+    if (isIOS() && !isStandalone()) {
+      body.replaceChildren(h('div', { class: 'msg info' },
+        h('strong', null, 'On iPhone, add Meals to your Home Screen first.'),
+        h('ol', { class: 'steps' },
+          h('li', null, 'In Safari, tap the Share button (the square with an arrow).'),
+          h('li', null, 'Tap “Add to Home Screen”, then “Add”.'),
+          h('li', null, 'Open Meals from your Home Screen, sign in, and come back here.')),
+        h('div', { class: 'small' }, 'Needs iOS 16.4 or newer.')));
+      return;
+    }
+    if (!pushSupported()) { body.replaceChildren(note('This browser doesn’t support notifications. Try Chrome, Edge, Firefox, or Safari (on iPhone, from the Home Screen app).')); return; }
+    if (Notification.permission === 'denied') {
+      body.replaceChildren(note(isIOS() ? 'Notifications are blocked for Meals. Turn them on in the iPhone Settings app → Notifications → Meals, then come back.'
+        : 'Notifications are blocked for this site. Allow them in your browser’s site settings, then reload.', 'msg error'));
+      return;
+    }
+    const sub = Notification.permission === 'granted' ? await currentPushSub() : null;
+    if (sub) {
+      savePushSub(sub).catch(() => {}); // keep the server copy in sync (it is removed if the push service drops it)
+      const test = h('button', { type: 'button', class: 'secondary' }, 'Send a test notification');
+      const off = h('button', { type: 'button', class: 'ghost danger' }, 'Turn off on this device');
+      test.addEventListener('click', async () => {
+        test.disabled = true;
+        try {
+          const { data, error } = await sb.functions.invoke('push-notify', { body: { action: 'test' } });
+          if (error) throw error;
+          toast(data?.sent ? 'Test sent. It should arrive in a few seconds.' : 'Couldn’t reach this device. Try turning notifications off and on again.', !data?.sent);
+          if (!data?.sent) draw();
+        } catch (err) { toast(friendlyError(err), true); }
+        test.disabled = false;
+      });
+      off.addEventListener('click', async () => {
+        off.disabled = true;
+        const { error } = await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint);
+        if (error) { off.disabled = false; return toast(friendlyError(error), true); }
+        try { await sub.unsubscribe(); } catch { /* ignore */ }
+        toast('Notifications are off on this device.');
+        draw();
+      });
+      body.replaceChildren(h('div', { class: 'row notif-on' }, h('span', { class: 'chip makes' }, 'On'), h('span', { class: 'small' }, 'This device gets notifications.')),
+        h('div', { class: 'row wrap' }, test, off));
+      return;
+    }
+    const on = h('button', { type: 'button', class: 'block' }, 'Turn on notifications');
+    on.addEventListener('click', async () => {
+      on.disabled = true;
+      try {
+        const perm = await Notification.requestPermission(); // must come straight from the tap
+        if (perm !== 'granted') { toast(perm === 'denied' ? 'Notifications were blocked.' : 'Notifications weren’t allowed.', true); return draw(); }
+        const reg = await swRegistration();
+        await navigator.serviceWorker.ready;
+        const s2 = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(VAPID_PUBLIC_KEY) }));
+        await savePushSub(s2);
+        toast('Notifications are on for this device.');
+      } catch (err) {
+        console.warn('push subscribe', err);
+        toast(err?.code && /^\d|^[A-Z]{2}\d/.test(err.code) ? friendlyError(err) : `Couldn’t turn on notifications on this device.${err?.message ? ' ' + err.message : ''}`, true);
+      }
+      on.disabled = false;
+      draw();
+    });
+    body.replaceChildren(on, note('You can turn them off here anytime. Each phone or computer is set up separately.'));
+  };
+  draw();
+  return card;
+}
+
 /* ---------------- settings ---------------- */
 function renderSettings() {
   const hh = S.household;
@@ -1426,10 +1580,11 @@ function renderSettings() {
       form,
       presetsCard,
       membersCard,
+      notificationsCard(),
       h('section', { class: 'card stack' }, h('h2', null, 'Account'),
         h('div', { class: 'small' }, 'Signed in as ', h('strong', null, S.session.user.email), isOwner ? ' · household owner' : ''),
         h('div', { class: 'small muted' }, `Household timezone: ${hh.timezone || HOUSEHOLD_TZ}`),
-        h('button', { class: 'secondary block', onclick: async () => { await sb.auth.signOut(); location.hash = '#/week'; } }, 'Sign out')),
+        h('button', { class: 'secondary block', onclick: async () => { await forgetPushSub(); await sb.auth.signOut(); location.hash = '#/week'; } }, 'Sign out')),
       h('p', { class: 'small muted center' }, 'No tracking, no ads. Your data lives in your household’s Supabase project.')),
     tabbar('settings'));
 }

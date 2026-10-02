@@ -192,6 +192,8 @@ textarea { min-height: 96px; resize: vertical; }
 .msg.error { background: var(--brick); color: #FFFFFF; border-color: #8E3626; }
 .msg.ok { background: var(--green); color: #FFFFFF; border-color: #23664B; }
 .msg.info { background: var(--fill); color: var(--ink); border-color: var(--line-strong); }
+.msg ol.steps { margin: 8px 0 6px; padding-left: 1.25rem; display: grid; gap: 4px; }
+.notif-on { gap: 10px; align-items: center; }
 
 /* auth: solid blue band behind the hero, white card below */
 .auth { position: relative; isolation: isolate; padding: 72px 20px 32px; display: grid; gap: 28px; max-width: 440px; margin: 0 auto; }
@@ -251,7 +253,17 @@ textarea { min-height: 96px; resize: vertical; }
 /* one tidy secondary line: optional solid pill + plate count */
 .night .meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: .875rem; color: var(--muted); }
 .night .meta .plates { font-weight: 500; }
-.night .note { font-size: .875rem; color: var(--muted); }
+.night .desc, .recipe-card .desc { font-size: .9375rem; color: var(--muted); line-height: 1.4; }
+.night .stack .desc { margin-top: -3px; }
+/* the meal name opens its cooking notes; it reads as a title, not a button */
+button.title-btn {
+  font: inherit; font-weight: inherit; letter-spacing: inherit; line-height: inherit; color: var(--ink); text-align: left;
+  background: none; border: 0; border-radius: 6px; padding: 0; min-height: 0; display: inline; cursor: pointer;
+}
+button.title-btn::after { content: ' ›'; color: var(--faint); font-weight: 600; }
+button.title-btn.on::after { content: ' ⌄'; }
+button.title-btn:hover { background: none; color: var(--accent-text); text-decoration: underline; }
+button.title-btn:active:not(:disabled) { transform: none; }
 .night.empty .title { color: var(--faint); font-weight: 450; padding-top: 4px; }
 
 .meals { display: grid; gap: 8px; min-width: 0; }
@@ -418,6 +430,12 @@ button.ghost.swap.on { background: var(--sky); color: var(--navy); border-color:
 .dpicker .dcur:empty { display: none; }
 .dpicker .dsearch input { min-height: 44px; padding: 9px 12px; }
 .dlist { display: grid; gap: 8px; }
+.ddetail { grid-column: 1 / -1; margin-top: 2px; background: var(--surface); }
+.ddetail .mlabel.sub { color: var(--muted); margin-bottom: -6px; }
+.ddetail .cooknotes { white-space: pre-wrap; font-size: .9375rem; line-height: 1.5; color: var(--ink); }
+.ddetail .links { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn.secondary { background: var(--surface); color: var(--ink); border-color: var(--line-strong); }
+.btn.secondary:hover { background: var(--beige); border-color: var(--tan-dark); color: var(--ink); }
 button.pchip.drow { width: 100%; justify-content: start; }
 button.ghost.fav-toggle { min-height: 34px; padding: 4px 12px; font-size: .8125rem; border-radius: 999px; color: var(--ink); background: var(--surface); border-color: var(--line-strong); }
 button.ghost.fav-toggle.on { background: var(--beige); border-color: var(--tan-dark); color: var(--ink); }
