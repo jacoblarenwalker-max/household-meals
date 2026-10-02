@@ -1,5 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -591,7 +592,7 @@ function dinnerPicker(d, slot, current, close) {
   };
   const usageText = (r) => { const u = usage[r.id]; return u ? `Made ${u.n} time${u.n === 1 ? '' : 's'}, last ${fmtD(u.last, { month: 'short', day: 'numeric' })}` : 'Not planned yet'; };
   const drawList = () => {
-    const favs = S.recipes.filter((r) => r.is_favorite);
+    const favs = S.recipes.filter((r) => r.is_favorite && isReadyRecipe(r));
     q.parentElement && (q.parentElement.hidden = favs.length < 2);
     if (!favs.length) {
       list.replaceChildren(h('div', { class: 'empty-presets' },
@@ -708,7 +709,30 @@ function checkNowCard(week) {
 }
 
 /* ---------------- shopping ---------------- */
-const CATEGORIES = ['Produce', 'Meat', 'Dairy', 'Bakery', 'Pantry', 'Spices', 'Frozen', 'Breakfast basics', 'Snacks', 'Drinks', 'Household', 'Other'];
+// one aisle list for Shopping, Staples and presets (store-walk order); old names like "Dairy" map onto it
+const CATEGORIES = GROCERY_CATEGORIES;
+// unknown custom aisles sort just before Other
+const catOrder = (k) => { const i = CATEGORIES.indexOf(k); return i < 0 ? CATEGORIES.length - 1.5 : i; };
+const byAisle = (a, b) => catOrder(a) - catOrder(b) || a.localeCompare(b, undefined, { numeric: true });
+
+// aisle chip under a name field: guesses as you type (categorize.js), and stays put once you pick one yourself
+function aislePicker(nameInput, { initial = null } = {}) {
+  let manual = !!initial;
+  const sel = h('select', { class: 'cat-chip', 'aria-label': 'Aisle (guessed from the name, tap to change)' }, CATEGORIES.map((c) => h('option', { value: c }, c)));
+  const how = h('span', { class: 'cat-how small' });
+  const set = (c, auto) => {
+    const v = canonCategory(c);
+    if (![...sel.options].some((o) => o.value === v)) sel.append(h('option', { value: v }, v));
+    sel.value = v;
+    how.textContent = !auto ? 'Your pick' : nameInput.value.trim() ? 'Auto-sorted · tap to change' : 'Sorted automatically as you type';
+  };
+  const guess = () => { if (!manual) set(categorize(nameInput.value), true); };
+  nameInput.addEventListener('input', guess);
+  sel.addEventListener('change', () => { manual = true; set(sel.value, false); });
+  set(initial || 'Other', !initial);
+  const el = h('div', { class: 'cat-pick' }, h('span', { class: 'cat-label' }, 'Aisle'), sel, how);
+  return { el, select: sel, value: () => sel.value, reset: () => { manual = false; guess(); } };
+}
 let hideChecked = sessionStorage.getItem('hideChecked') === '1';
 
 async function renderShop() {
@@ -779,11 +803,11 @@ async function renderShop() {
     counter.textContent = `${done} of ${items.length} checked`;
     const groups = new Map();
     for (const it of items) {
-      const key = (it.aisle && it.aisle.trim()) || (it.category && it.category.trim()) || 'Other';
+      const key = canonCategory((it.aisle && it.aisle.trim()) || it.category);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(it);
     }
-    const keys = [...groups.keys()].sort((a, b) => (a === 'Other') - (b === 'Other') || a.localeCompare(b, undefined, { numeric: true }));
+    const keys = [...groups.keys()].sort(byAisle);
     const cards = [];
     for (const k of keys) {
       const its = groups.get(k).filter((i) => !(hideChecked && i.checked));
@@ -832,8 +856,7 @@ async function renderShop() {
   const name = h('input', { placeholder: 'e.g. Paper towels', required: true, maxlength: 200 });
   const qty = h('input', { type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: 'Qty' });
   const unit = h('input', { placeholder: 'Unit (lb, can…)', maxlength: 40 });
-  const cat = h('input', { placeholder: 'Category', list: 'catlist', maxlength: 60 });
-  const catList = h('datalist', { id: 'catlist' }, [...new Set([...CATEGORIES, ...items.map((i) => i.category).filter(Boolean)])].map((c) => h('option', { value: c })));
+  const aisle = aislePicker(name);
   const addBtn = h('button', { type: 'submit', class: 'block' }, 'Add to list');
   const addForm = h('form', { class: 'card stack', onsubmit: async (e) => {
     e.preventDefault();
@@ -842,15 +865,15 @@ async function renderShop() {
     const maxPos = items.reduce((m, i) => Math.max(m, i.position || 0), 0);
     const { data, error } = await sb.from('shopping_list_items').insert({
       week_id: week.id, name: name.value.trim(), quantity: qty.value === '' ? null : Number(qty.value),
-      unit: unit.value.trim() || null, category: cat.value.trim() || 'Other', store, position: maxPos + 1, source: 'manual',
+      unit: unit.value.trim() || null, category: aisle.value(), store, position: maxPos + 1, source: 'manual',
     }).select().single();
     addBtn.disabled = false;
     if (error) return toast(friendlyError(error), true);
-    items.push(data); name.value = ''; qty.value = ''; unit.value = '';
+    items.push(data); name.value = ''; qty.value = ''; unit.value = ''; aisle.reset();
     await requestPrices(rowPriceRefs([data]), week.id);
     draw(); drawTotals(); toast(hasPrice(data) ? 'Added.' : 'Added. The meal bot will look up its Walmart price.');
   } },
-  h('h2', null, 'Add an item'), h('label', null, 'Item', name), h('div', { class: 'grid2' }, qty, unit), cat, catList, addBtn,
+  h('h2', null, 'Add an item'), h('label', null, 'Item', name), aisle.el, h('div', { class: 'grid2' }, qty, unit), addBtn,
   h('p', { class: 'small muted' }, 'Snacks, drinks and basics live in the Staples tab, so you can add them every week in one tap.'));
 
   const hideBtn = h('button', { class: 'ghost' }, hideChecked ? 'Show checked' : 'Hide checked');
@@ -902,25 +925,12 @@ const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 const MEAL_TYPES = [['breakfast', 'Breakfast'], ['lunch', 'Lunch']];
 const MEAL_LABEL = Object.fromEntries(MEAL_TYPES);
 
-// rough aisle guess for free-text breakfast/lunch lines; anything unknown lands in "Other"
-const CATEGORY_HINTS = [
-  ['Frozen', /\bfrozen\b|waffles?\b|ice cream/],
-  ['Dairy', /\b(milk|eggs?|yogh?urts?|cheese|butter|cream cheese|sour cream|half and half|creamer|cottage)\b/],
-  ['Meat', /\b(ham|turkey|bacon|sausages?|chicken|beef|salami|pepperoni|deli meat|lunch meat|hot dogs?)\b/],
-  ['Bakery', /\b(bread|bagels?|tortillas?|buns?|rolls?|english muffins?|muffins?|croissants?|pitas?|naan)\b/],
-  ['Produce', /\b(bananas?|apples?|berr(y|ies)|strawberr(y|ies)|blueberr(y|ies)|grapes?|oranges?|lettuce|spinach|tomato(es)?|avocados?|cucumbers?|carrots?|celery|peppers?|onions?|lemons?|limes?|potato(es)?|fruit|salad mix)\b/],
-  ['Breakfast basics', /\b(cereal|oats|oatmeal|granola|pancake mix|syrup)\b/],
-  ['Pantry', /\b(peanut butter|jam|jelly|honey|mayo(nnaise)?|mustard|ketchup|rice|pasta|noodles|beans|soup|tuna|crackers|chips|salsa|sauce)\b/],
-  ['Drinks', /\b(juice|coffee|tea|soda|sparkling|water)\b/],
-];
-function guessCategory(name) {
-  const n = norm(name);
-  for (const [cat, re] of CATEGORY_HINTS) if (re.test(n)) return cat;
-  return 'Other';
-}
+// aisle guess for free-text lines (breakfast/lunch, presets): same dictionary as the add forms
+const guessCategory = (name) => categorize(name);
 
 // insert rows into the week's shopping list, skipping anything already on it (same name or same staple)
-async function addToList(weekId, rows, existing) {
+// extraRefs: more needs_price refs (e.g. the new staple itself) to send in the same request
+async function addToList(weekId, rows, existing, extraRefs = []) {
   const haveName = new Set(existing.map((i) => norm(i.name)));
   const haveStaple = new Set(existing.filter((i) => i.staple_id).map((i) => i.staple_id));
   const fresh = []; const skipped = [];
@@ -931,13 +941,13 @@ async function addToList(weekId, rows, existing) {
     haveName.add(k); if (r.staple_id) haveStaple.add(r.staple_id);
     fresh.push(r);
   }
-  if (!fresh.length) return { added: [], skipped };
+  if (!fresh.length) { await requestPrices(extraRefs, weekId); return { added: [], skipped }; }
   let pos = existing.reduce((m, i) => Math.max(m, i.position || 0), 0);
   const payload = fresh.map((r) => ({ week_id: weekId, store: storeName(), position: ++pos, quantity: null, unit: null, ...r }));
   const { data, error } = await sb.from('shopping_list_items').insert(payload).select();
   if (error) throw error;
   existing.push(...(data || []));
-  await requestPrices(rowPriceRefs(data || []), weekId);
+  await requestPrices([...rowPriceRefs(data || []), ...extraRefs], weekId);
   return { added: data || [], skipped };
 }
 function listResultText({ added, skipped }) {
@@ -950,7 +960,7 @@ function listResultText({ added, skipped }) {
 /* staples on a week's list (shared by the Staples and Shopping tabs) */
 const stapleOnList = (items, s) => items.some((i) => i.staple_id === s.id || norm(i.name) === norm(s.name));
 // a staple's verified Walmart price (if any) travels with it onto the list so it counts toward the budget
-const stapleToRow = (s) => ({ name: s.name, quantity: s.quantity ?? null, unit: s.unit || null, category: s.category || 'Other', source: 'staple', staple_id: s.id,
+const stapleToRow = (s) => ({ name: s.name, quantity: s.quantity ?? null, unit: s.unit || null, category: canonCategory(s.category), source: 'staple', staple_id: s.id,
   ...(hasPrice(s) ? { price_cents: s.price_cents, price_source: s.price_source, price_verified_at: s.price_verified_at || null, walmart_product_url: s.walmart_product_url || null } : {}) });
 // take staple rows back off the list (Undo / "✓ On list"): only unchecked rows with source 'staple';
 // dinner, breakfast/lunch and manual rows are never touched. Mutates `items`; returns how many went.
@@ -981,8 +991,7 @@ async function addStaplesToList(weekId, list, items, { weekly = false, onChange 
 }
 
 // category → color class for aisle headers and chips
-const CAT_CLASS = { produce: 'produce', meat: 'meat', dairy: 'dairy', bakery: 'bakery', pantry: 'pantry', spices: 'spices', frozen: 'frozen', 'breakfast basics': 'breakfast', snacks: 'snacks', drinks: 'drinks', household: 'household' };
-const catClass = (k) => `cat-${CAT_CLASS[norm(k)] || 'other'}`;
+const catClass = (k) => { const c = canonCategory(k); return `cat-${CATEGORIES.includes(c) ? c.toLowerCase().replace(/&/g, 'and').replace(/[^a-z]+/g, '-') : 'other'}`; };
 // "walmart.com online price, <product>, <url>, checked …" → "<product>"
 // "walmart.com online price, no store selected, lowest-cost option: Great Value X, 16 oz, https://…, checked …" -> "Great Value X, 16 oz"
 function productName(src) {
@@ -1110,7 +1119,7 @@ function presetPicker(d, ws, date, type, label, item, close, freeText) {
       }))
       : h('div', { class: 'empty-presets' },
         h('p', { class: 'small muted' }, `No saved ${label.toLowerCase()}s yet. Save the ones you have most weeks, then pick them here in one tap.`),
-        h('button', { type: 'button', onclick: () => goPresets(`#/presets/new-${type}`) }, `Add your first ${label.toLowerCase()}`)),
+        h('button', { type: 'button', onclick: () => goPresets(`#/presets/new-${type}`) }, `Add a ${label.toLowerCase()}`)),
     list.length ? h('label', { class: 'fillweek' }, allDays, h('span', null, 'Fill whole week ', h('span', { class: 'hint' }, 'apply my pick to all 7 days'))) : null,
     h('div', { class: 'actions' },
       h('button', { type: 'button', class: 'secondary', onclick: freeText }, 'Type something else'),
@@ -1192,7 +1201,7 @@ function syncText({ added, updated, removed, skipped }) {
 
 function mealEditor(d, date, type, label, item, close) {
   const title = h('input', { maxlength: 200, 'aria-label': `${label} for ${fmtD(date, { weekday: 'long' })}`, placeholder: type === 'breakfast' ? 'e.g. Oatmeal & berries' : 'e.g. Turkey sandwiches', value: item?.title || '' });
-  const recipe = h('select', { 'aria-label': 'Link a recipe (optional)' }, h('option', { value: '' }, 'No recipe link'), S.recipes.map((r) => h('option', { value: r.id }, r.title)));
+  const recipe = h('select', { 'aria-label': 'Link a recipe (optional)' }, h('option', { value: '' }, 'No recipe link'), S.recipes.filter(isReadyRecipe).map((r) => h('option', { value: r.id }, r.title)));
   recipe.value = item?.recipe_id || '';
   const ing = h('textarea', { rows: 3, maxlength: 2000, placeholder: 'Ingredients to add to the shopping list, one per line\nRolled oats\nBlueberries' });
   const save = h('button', { type: 'submit' }, 'Save');
@@ -1270,7 +1279,6 @@ function budgetBar(sum) {
 }
 
 /* ---------------- staples ---------------- */
-const STAPLE_CATS = ['Snacks', 'Drinks', 'Breakfast basics', 'Household', 'Other'];
 
 async function renderStaples() {
   const content = h('div', { class: 'content' }, h('div', { class: 'card muted center' }, 'Loading staples…'));
@@ -1326,36 +1334,62 @@ async function renderStaples() {
   const bulkNote = h('p', { class: 'small muted center' });
   const listWrap = h('div', { class: 'stack' });
 
+  // edit an existing staple (s) or add a new one (s = null). Adding: type the name, the aisle is guessed,
+  // and saving also puts it on the selected week's list (source 'staple', no duplicates) + asks for a Walmart price.
   const staplesForm = (s, onDone) => {
     const f = {
-      name: h('input', { required: true, maxlength: 200, placeholder: 'e.g. Sparkling water', value: s?.name || '', 'aria-label': 'Item' }),
-      category: h('select', { 'aria-label': 'Category' }, [...new Set([...STAPLE_CATS, s?.category].filter(Boolean))].map((c) => h('option', { value: c }, c))),
+      name: h('input', { required: true, maxlength: 200, placeholder: s ? '' : 'e.g. Granola bars', value: s?.name || '', 'aria-label': 'Item', autocomplete: 'off' }),
       quantity: h('input', { type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: 'Qty', value: s?.quantity ?? '', 'aria-label': 'Quantity' }),
       unit: h('input', { maxlength: 40, placeholder: 'Unit (pack, box…)', value: s?.unit || '', 'aria-label': 'Unit' }),
       weekly: h('input', { type: 'checkbox', name: 'is_weekly' }),
     };
     f.weekly.checked = !!s?.is_weekly;
-    f.category.value = s?.category || 'Snacks';
-    const save = h('button', { type: 'submit' }, s ? 'Save' : 'Add staple');
-    const form = h('form', { class: s ? 'meal-edit' : 'stack', onsubmit: async (e) => {
+    const aisle = aislePicker(f.name, { initial: s ? canonCategory(s.category) : null });
+    const save = h('button', { type: 'submit', class: s ? '' : 'block' }, s ? 'Save' : week ? 'Add to staples + this week’s list' : 'Add staple');
+    const form = h('form', { class: s ? 'meal-edit' : 'stack staple-add', onsubmit: async (e) => {
       e.preventDefault();
-      const row = { name: f.name.value.trim(), category: f.category.value, quantity: f.quantity.value === '' ? null : Number(f.quantity.value), unit: f.unit.value.trim() || null, is_weekly: f.weekly.checked };
+      const row = { name: f.name.value.trim(), category: aisle.value(), quantity: f.quantity.value === '' ? null : Number(f.quantity.value), unit: f.unit.value.trim() || null, is_weekly: f.weekly.checked };
       if (!row.name) return;
       save.disabled = true;
-      const q = s ? sb.from('staples').update(row).eq('id', s.id)
-        : sb.from('staples').insert({ ...row, household_id: hid, active: true, position: staples.reduce((m, x) => Math.max(m, x.position || 0), 0) + 1 });
-      const { data, error } = await q.select().single();
-      save.disabled = false;
-      if (error) return toast(error.code === '23505' ? 'That staple is already on your list.' : friendlyError(error), true);
-      if (s) Object.assign(s, data); else staples.push(data);
-      if (!hasPrice(data)) await requestPrices([{ table: 'staples', id: data.id, name: data.name }], week?.id || null);
-      toast(s ? 'Saved.' : hasPrice(data) ? 'Staple added.' : 'Staple added. The meal bot will look up its Walmart price.');
-      onDone();
+      try {
+        if (s) {
+          const { data, error } = await sb.from('staples').update(row).eq('id', s.id).select().single();
+          if (error) return toast(error.code === '23505' ? 'That staple is already on your list.' : friendlyError(error), true);
+          Object.assign(s, data);
+          if (!hasPrice(data)) await requestPrices([{ table: 'staples', id: data.id, name: data.name }], week?.id || null);
+          toast('Saved.');
+          return onDone();
+        }
+        let staple; let isNew = true;
+        const { data, error } = await sb.from('staples').insert({ ...row, household_id: hid, active: true, position: staples.reduce((m, x) => Math.max(m, x.position || 0), 0) + 1 }).select().single();
+        if (error && error.code === '23505') {
+          // already a staple: just make sure it's on this week's list
+          staple = staples.find((x) => norm(x.name) === norm(row.name));
+          if (!staple) return toast('That staple is already on your list.', true);
+          isNew = false;
+        } else if (error) return toast(friendlyError(error), true);
+        else { staple = data; staples.push(data); }
+        const stapleRef = isNew && !hasPrice(staple) ? [{ table: 'staples', id: staple.id, name: staple.name }] : [];
+        const pricing = !hasPrice(staple) ? ' · looking up its Walmart price' : '';
+        const lead = isNew ? `Added ${staple.name} (${canonCategory(staple.category)}) to staples` : `${staple.name} is already a staple`;
+        if (!week) {
+          await requestPrices(stapleRef, null);
+          toast(`${lead}. There’s no list for ${weekLabel(ws)} yet${pricing}.`);
+        } else {
+          let res = null;
+          try { res = await addToList(week.id, [stapleToRow(staple)], items, stapleRef); }
+          catch (err) { await requestPrices(stapleRef, week.id); toast(`${lead}, but it couldn’t go on the list: ${friendlyError(err)}`, true); }
+          if (res) toast(res.added.length ? `${lead} and the ${weekLabel(ws)} list${pricing}.` : `${lead} · it was already on the ${weekLabel(ws)} list.`);
+        }
+        refreshBudget();
+        onDone();
+      } finally { save.disabled = false; }
     } },
     s ? h('div', { class: 'mlabel' }, 'Edit staple') : h('h2', null, 'Add a staple'),
     s ? f.name : h('label', null, 'Item', f.name),
-    s ? f.category : h('label', null, 'Category', f.category),
-    h('div', { class: 'grid2' }, f.quantity, f.unit),
+    aisle.el,
+    s ? h('div', { class: 'grid2' }, f.quantity, f.unit)
+      : h('details', { class: 'more-fields' }, h('summary', null, 'Quantity and unit (optional)'), h('div', { class: 'grid2' }, f.quantity, f.unit)),
     h('label', { class: 'check-line' }, f.weekly, h('span', null, '★ Weekly', h('span', { class: 'hint' }, ' · added by “Add weekly staples”'))),
     s ? h('div', { class: 'actions' }, save, h('button', { type: 'button', class: 'secondary', onclick: onDone }, 'Cancel'), h('span', { class: 'grow' }),
       h('button', { type: 'button', class: 'ghost danger', onclick: async () => {
@@ -1364,7 +1398,9 @@ async function renderStaples() {
         if (error) return toast(friendlyError(error), true);
         staples.splice(staples.indexOf(s), 1); toast('Removed.'); onDone();
       } }, 'Remove'))
-      : save);
+      : h('div', { class: 'stack tight' }, save,
+        h('p', { class: 'small muted' }, week ? `Saving puts it on the ${weekLabel(ws)} list too. The meal bot prices it at the cheapest matching Walmart option.`
+          : `No shopping list for ${weekLabel(ws)} yet, so it’s saved as a staple only.`)));
     return form;
   };
 
@@ -1425,9 +1461,8 @@ async function renderStaples() {
     else if (!pending.length) { bulkBtn.disabled = true; bulkBtn.textContent = 'All checked items are on the list'; bulkNote.textContent = `Adding to the ${weekLabel(ws)} list.`; }
     else { bulkBtn.disabled = false; bulkBtn.textContent = `Add ${pending.length} checked to list`; bulkNote.textContent = `Adding to the ${weekLabel(ws)} list · ${storeName()}.`; }
     const groups = new Map();
-    for (const s of staples) { const k = s.category || 'Other'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); }
-    const order = (k) => { const i = STAPLE_CATS.indexOf(k); return i < 0 ? STAPLE_CATS.length - 1.5 : i; }; // custom categories sit just before Other
-    const keys = [...groups.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+    for (const s of staples) { const k = canonCategory(s.category); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); }
+    const keys = [...groups.keys()].sort(byAisle);
     const cards = keys.map((k) => h('section', { class: `card aisle ${catClass(k)}` }, h('h3', null, h('span', { class: 'aisle-pill' }, k)),
       groups.get(k).sort((a, b) => (a.position || 0) - (b.position || 0) || a.name.localeCompare(b.name)).map(stapleRow)));
     if (!staples.length) cards.push(h('div', { class: 'card muted center' }, 'No staples yet. Add snacks, drinks and household basics you buy most weeks.'));
@@ -1460,29 +1495,133 @@ function ingredientLine(x) {
   return String(x);
 }
 
+/* recipe from photo: downsize in the browser, upload to the private recipe-photos bucket
+   (<household_id>/<uuid>.jpg), add a placeholder recipe (status pending_photo) and one recipe_photo app_event.
+   The meal bot reads the photo and fills the recipe in; the photo stays on the recipe page as the record. */
+const PHOTO_BUCKET = 'recipe-photos';
+const PHOTO_MAX_PX = 1600;
+const PHOTO_QUALITY = 0.8;
+const isPendingPhoto = (r) => r?.status === 'pending_photo';
+const isReadyRecipe = (r) => !r?.status || r.status === 'ready';
+async function decodeImage(file) {
+  try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { /* older Safari: fall back below */ }
+  const dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(fr.error); fr.readAsDataURL(file); });
+  const img = new Image(); img.src = dataUrl; await img.decode(); return img;
+}
+async function downscaleToJpeg(file, max = PHOTO_MAX_PX, quality = PHOTO_QUALITY) {
+  const src = await decodeImage(file);
+  const w0 = src.width || src.naturalWidth; const h0 = src.height || src.naturalHeight;
+  if (!w0 || !h0) throw new Error('That photo couldn’t be read. Try another one.');
+  const k = Math.min(1, max / Math.max(w0, h0));
+  const w = Math.max(1, Math.round(w0 * k)); const hgt = Math.max(1, Math.round(h0 * k));
+  const c = document.createElement('canvas'); c.width = w; c.height = hgt;
+  const ctx = c.getContext('2d'); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, w, hgt); ctx.drawImage(src, 0, 0, w, hgt);
+  src.close?.();
+  const blob = await new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('That photo couldn’t be read. Try another one.'))), 'image/jpeg', quality));
+  return { blob, width: w, height: hgt };
+}
+const signedCache = new Map(); // photo_path -> { url, until }
+async function photoUrl(path) {
+  if (!path) return null;
+  const hit = signedCache.get(path);
+  if (hit && hit.until > Date.now()) return hit.url;
+  const { data, error } = await sb.storage.from(PHOTO_BUCKET).createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) return null;
+  signedCache.set(path, { url: data.signedUrl, until: Date.now() + 50 * 60e3 });
+  return data.signedUrl;
+}
+// <img> that fills in once its signed URL arrives
+function recipePhoto(path, { cls = 'recipe-photo', alt = 'Recipe photo' } = {}) {
+  const img = h('img', { class: cls, alt, loading: 'lazy', decoding: 'async' });
+  photoUrl(path).then((u) => { if (u) img.src = u; else img.replaceWith(h('span', { class: `${cls} missing small` }, 'Photo unavailable')); });
+  return img;
+}
+async function addRecipeFromPhoto(file, setStatus) {
+  if (!file) return null;
+  if (file.type && !/^image\//.test(file.type)) throw new Error('That file isn’t a photo.');
+  setStatus('Shrinking photo…');
+  const { blob } = await downscaleToJpeg(file);
+  const path = `${S.household.id}/${crypto.randomUUID()}.jpg`;
+  setStatus('Uploading…');
+  const up = await sb.storage.from(PHOTO_BUCKET).upload(path, blob, { contentType: 'image/jpeg', upsert: false, cacheControl: '3600' });
+  if (up.error) throw up.error;
+  const { data: rec, error } = await sb.from('recipes').insert({ household_id: S.household.id, title: 'New recipe from photo', status: 'pending_photo', photo_path: path }).select().single();
+  if (error) { await sb.storage.from(PHOTO_BUCKET).remove([path]).catch(() => {}); throw error; }
+  const ev = await sb.from('app_events').insert({
+    household_id: S.household.id, event_type: 'recipe_photo',
+    payload: { recipe_id: rec.id, photo_path: path, bucket: PHOTO_BUCKET, bytes: blob.size, source: 'web_app',
+      requested_by_member_id: S.member?.id || null, requested_by: S.member?.display_name || null },
+  });
+  if (ev.error) console.warn('recipe_photo event', ev.error); // the recipe still shows up in pending_photo_recipes
+  S.recipes.push(rec);
+  return rec;
+}
+
+// "Mel’s Kitchen Cafe" from source_name, else the web address ("melskitchencafe.com")
+function siteName(r, url) {
+  if (r.source_name && r.source_name.trim()) return r.source_name.trim();
+  try { return url ? new URL(url).hostname.replace(/^www\./, '') : ''; } catch { return ''; }
+}
+
 function renderRecipes() {
   const q = h('input', { type: 'search', placeholder: 'Search recipes or tags', value: sessionStorage.getItem('recipeQ') || '' });
   const list = h('div', { class: 'stack' });
   const draw = () => {
     const term = q.value.trim().toLowerCase();
     sessionStorage.setItem('recipeQ', q.value);
-    const rs = S.recipes.filter((r) => !term || [r.title, r.description, r.source_name, ...(r.tags || [])].join(' ').toLowerCase().includes(term));
+    const rs = S.recipes.filter((r) => !term || [r.title, r.description, r.source_name, ...(r.tags || [])].join(' ').toLowerCase().includes(term))
+      .sort((a, b) => isReadyRecipe(a) - isReadyRecipe(b)); // photos still being read sit on top
     list.replaceChildren(...(rs.length ? rs.map((r) => {
+      if (!isReadyRecipe(r)) {
+        const failed = r.status === 'photo_failed';
+        return h('a', { class: `card recipe-card photo-pending${failed ? ' failed' : ''}`, href: `#/recipes/${encodeURIComponent(r.id)}` },
+          r.photo_path ? recipePhoto(r.photo_path, { cls: 'pp-thumb', alt: '' }) : h('span', { class: 'pp-thumb' }),
+          h('div', { class: 'pp-text' }, h('div', { class: 'title' }, r.title),
+            h('div', { class: 'pp-status small' }, failed ? 'Couldn’t read this photo. Tap to type it in.' : 'Reading photo…'),
+            h('div', { class: 'small muted' }, failed ? '' : 'The meal bot fills in the recipe from your photo.')));
+      }
       const mins = (r.prep_minutes || 0) + (r.cook_minutes || 0);
-      return h('div', { class: 'recipe-item' },
-        h('a', { class: 'card recipe-card', href: `#/recipes/${encodeURIComponent(r.id)}` },
+      const url = r.source_url ? safeUrl(r.source_url) : null;
+      const site = siteName(r, url);
+      // the card body opens the household copy; the blue button opens the original recipe page in a new tab
+      return h('div', { class: 'recipe-item card recipe-card' },
+        h('a', { class: 'recipe-main', href: `#/recipes/${encodeURIComponent(r.id)}` },
           h('div', { class: 'title' }, r.title),
           r.description ? h('div', { class: 'desc' }, r.description) : null,
-          h('div', { class: 'small muted' }, [r.source_name, mins ? `${mins} min` : null, r.servings ? `serves ${r.servings}` : null].filter(Boolean).join(' · ')),
+          h('div', { class: 'small muted' }, [mins ? `${mins} min` : null, r.servings ? `serves ${r.servings}` : null].filter(Boolean).join(' · ') || null),
           r.tags?.length ? h('div', { class: 'row wrap', style: null }, r.tags.map((t) => h('span', { class: 'chip tag' }, t))) : null),
+        url ? h('a', { class: 'btn open-recipe', href: url, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `Open ${r.title} on ${site || 'the original site'} (opens in a new tab)` },
+          h('span', { class: 'or-label' }, 'Open recipe ↗'), site ? h('span', { class: 'or-site' }, site) : null)
+          : h('p', { class: 'no-link small' }, 'No link yet'),
         starButton(r));
     }) : [h('div', { class: 'card muted center' }, S.recipes.length ? 'No recipes match.' : 'No recipes yet. Add your favorites!')]));
   };
   q.addEventListener('input', draw);
   draw();
+  // camera button (capture) + a quieter "choose a saved photo" for pictures already on the phone
+  const photoStatus = h('p', { class: 'small muted photo-status', role: 'status' });
+  const camInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'visually-hidden', 'aria-label': 'Take a photo of a recipe' });
+  const pickInput = h('input', { type: 'file', accept: 'image/*', class: 'visually-hidden', 'aria-label': 'Choose a recipe photo' });
+  const photoBtn = h('label', { class: 'btn photo-btn' }, h('span', { 'aria-hidden': 'true' }, '📷'), ' Add from photo', camInput);
+  const onPick = async (input) => {
+    const file = input.files?.[0]; input.value = '';
+    if (!file) return;
+    photoBtn.classList.add('busy');
+    try {
+      await addRecipeFromPhoto(file, (t) => { photoStatus.textContent = t; });
+      photoStatus.textContent = '';
+      toast('Photo saved. The meal bot will read it and fill in the recipe.');
+      if (route().view === 'recipes' && !route().arg) draw();
+    } catch (err) { photoStatus.textContent = ''; toast(friendlyError(err), true); }
+    finally { photoBtn.classList.remove('busy'); }
+  };
+  camInput.addEventListener('change', () => onPick(camInput));
+  pickInput.addEventListener('change', () => onPick(pickInput));
   mount(topbar('Recipes', h('div', { class: 'row', style: null }, q)),
     h('div', { class: 'content' },
-      h('a', { class: 'btn block', href: '#/recipes/new' }, '+ Add a recipe'),
+      h('div', { class: 'recipe-add' }, h('a', { class: 'btn', href: '#/recipes/new' }, '+ Add a recipe'), photoBtn),
+      h('p', { class: 'small muted photo-hint' }, 'Snap a cookbook page or recipe card and the meal bot types it in. ',
+        h('label', { class: 'linkish' }, 'Choose a saved photo', pickInput), photoStatus),
       list),
     tabbar('recipes'));
   // keep fresh in the background
@@ -1559,15 +1698,46 @@ function renderRecipeForm(id) {
   h('label', null, 'Instructions', f.instructions),
   h('label', null, 'Notes', f.notes),
   save);
+  // a photo recipe keeps its original photo on the page as the record (private bucket, signed URL)
+  let photoCard = null;
+  if (!isNew && r.photo_path) {
+    const full = h('a', { class: 'small', target: '_blank', rel: 'noopener noreferrer', hidden: true }, 'Open full size ↗');
+    photoUrl(r.photo_path).then((u) => { if (u) { full.href = u; full.hidden = false; } });
+    photoCard = h('section', { class: 'card stack photo-record' },
+      isPendingPhoto(r) ? h('div', { class: 'pp-banner' }, h('strong', null, 'Reading photo…'), h('span', { class: 'small' }, ' The meal bot will fill in the title, ingredients and steps. You can also type them in below.'))
+        : r.status === 'photo_failed' ? h('div', { class: 'pp-banner failed' }, h('strong', null, 'The meal bot couldn’t read this photo.'), h('span', { class: 'small' }, ' Type the recipe in below, or add a clearer photo.'))
+        : null,
+      h('div', { class: 'row spread' }, h('h2', null, 'Original photo'), full),
+      recipePhoto(r.photo_path, { cls: 'recipe-photo', alt: `Photo of ${r.title}` }));
+  }
   mount(topbar(isNew ? 'New recipe' : 'Edit recipe'),
     h('div', { class: 'content' },
       h('div', { class: 'row spread' }, h('a', { href: '#/recipes' }, '← All recipes'),
-        h('div', { class: 'row' }, !isNew ? favToggle : null, url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open original ↗') : null)),
-      form),
+        h('div', { class: 'row' }, !isNew && isReadyRecipe(r) ? favToggle : null, url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open original ↗') : null)),
+      photoCard, form),
     tabbar('recipes'));
 }
 
 /* ---------------- breakfast & lunch presets ---------------- */
+// two equal buttons, each opening the preset form with that meal type already chosen
+function presetAddButtons(back) {
+  const go = () => sessionStorage.setItem('presetsBack', back);
+  return h('div', { class: 'preset-add' },
+    h('a', { class: 'btn', href: '#/presets/new-breakfast', onclick: go }, 'Add a breakfast'),
+    h('a', { class: 'btn', href: '#/presets/new-lunch', onclick: go }, 'Add a lunch'));
+}
+// saved presets grouped under Breakfast and Lunch headings (headings only for types that have presets)
+function presetGroups(back) {
+  const go = () => sessionStorage.setItem('presetsBack', back);
+  return h('div', { class: 'preset-groups' }, MEAL_TYPES.map(([type, label]) => {
+    const list = presetsOf(type);
+    if (!list.length) return null;
+    return h('div', { class: `preset-group-mini ${type}` }, h('h3', null, label),
+      list.map((p) => h('a', { class: 'preset-row', href: `#/presets/${encodeURIComponent(p.id)}`, onclick: go, 'aria-label': `Edit ${p.title}` },
+        h('div', { class: 'grow' }, h('div', { class: 'name' }, p.title)), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'))));
+  }));
+}
+
 function renderPresets(arg) {
   const back = sessionStorage.getItem('presetsBack') || '#/settings';
   const backLink = h('a', { href: back }, back === '#/week' ? '← Back to This week' : '← Back to Settings');
@@ -1575,8 +1745,7 @@ function renderPresets(arg) {
   const section = (type, label) => {
     const list = presetsOf(type);
     return h('section', { class: `card stack preset-group ${type}` },
-      h('div', { class: 'row spread' }, h('h2', null, `${label}s`),
-        list.length ? h('a', { class: 'btn small-btn', href: `#/presets/new-${type}` }, `+ Add ${label.toLowerCase()}`) : null),
+      h('div', { class: 'row spread' }, h('h2', null, label)),
       list.length
         ? list.map((p) => {
           const ings = ingList(p.ingredients);
@@ -1586,13 +1755,13 @@ function renderPresets(arg) {
             h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
         })
         : h('div', { class: 'empty-presets' },
-          h('p', { class: 'small muted' }, type === 'breakfast' ? 'No breakfasts saved yet. Add the ones you eat most weeks, like oatmeal or eggs and toast.' : 'No lunches saved yet. Add your go-to lunches, like sandwiches or leftovers.'),
-          h('a', { class: 'btn block', href: `#/presets/new-${type}` }, `Add your first ${label.toLowerCase()}`)));
+          h('p', { class: 'small muted' }, type === 'breakfast' ? 'No breakfasts saved yet. Add the ones you eat most weeks, like oatmeal or eggs and toast.' : 'No lunches saved yet. Add your go-to lunches, like sandwiches or leftovers.')));
   };
   mount(topbar('Presets'),
     h('div', { class: 'content' },
       h('div', { class: 'row spread' }, backLink),
       h('p', { class: 'small muted' }, 'Saved breakfasts and lunches. Pick one for a day (or the whole week) on This week, and its ingredients are added to the shopping list, combined across days.'),
+      presetAddButtons(back),
       section('breakfast', 'Breakfast'), section('lunch', 'Lunch')),
     tabbar('settings'));
 }
@@ -1613,8 +1782,8 @@ function renderPresetForm(arg, back) {
     const name = h('input', { maxlength: 200, placeholder: 'Ingredient, e.g. Rolled oats', value: ing.name || '', 'aria-label': 'Ingredient name' });
     const qty = h('input', { type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: 'Qty per day', value: ing.quantity ?? '', 'aria-label': 'Quantity per day' });
     const unit = h('input', { maxlength: 40, placeholder: 'Unit', value: ing.unit || '', 'aria-label': 'Unit' });
-    const cat = h('select', { 'aria-label': 'Aisle / category' }, [...new Set([...CATEGORIES, ing.category].filter(Boolean))].map((c) => h('option', { value: c }, c)));
-    cat.value = ing.category || 'Other';
+    const cat = h('select', { 'aria-label': 'Aisle / category' }, [...new Set([...CATEGORIES, canonCategory(ing.category)])].map((c) => h('option', { value: c }, c)));
+    cat.value = canonCategory(ing.category);
     name.addEventListener('change', () => { if (!ing.category && cat.value === 'Other') cat.value = guessCategory(name.value); });
     const el = h('div', { class: 'ing-row' }, name, h('div', { class: 'ing-grid' }, qty, unit, cat,
       h('button', { type: 'button', class: 'ghost', 'aria-label': 'Remove ingredient', onclick: () => { el.remove(); if (!rowsWrap.children.length) rowsWrap.append(ingRow()); } }, '✕')));
@@ -1832,7 +2001,9 @@ function renderSettings() {
   const presetsCard = h('section', { class: 'card stack tint-meals' }, h('h2', null, 'Breakfast & lunch presets'),
     h('p', { class: 'small muted' }, nB + nL ? `${nB} breakfast${nB === 1 ? '' : 's'} and ${nL} lunch${nL === 1 ? '' : 'es'} saved. Pick them on This week in one tap; their ingredients go to the shopping list.`
       : 'Save the breakfasts and lunches you have most weeks, with their ingredients, so you never have to type them again.'),
-    h('a', { class: 'btn block', href: '#/presets', onclick: () => sessionStorage.setItem('presetsBack', '#/settings') }, nB + nL ? 'Edit presets' : 'Add your first breakfast'));
+    presetAddButtons('#/settings'),
+    nB + nL ? presetGroups('#/settings') : null,
+    nB + nL ? h('a', { class: 'small', href: '#/presets', onclick: () => sessionStorage.setItem('presetsBack', '#/settings') }, 'See all presets') : null);
 
   const membersCard = h('section', { class: 'card stack' }, h('h2', null, 'Members'),
     S.members.map((m) => h('div', { class: 'row spread' },

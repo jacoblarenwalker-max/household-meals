@@ -52,14 +52,28 @@ backed by a Supabase project.
     Free-text ingredient lines land with `source = 'breakfast' | 'lunch'` and `meal_plan_item_id`.
   - If a week has no plan yet, **Start planning this week** creates a draft week so breakfasts/lunches can be added.
   - A slim **monthly budget bar** shows priced list totals for weeks starting in that month against the budget.
-- **Shopping**: the selected week's list grouped by aisle/category, with dinner, breakfast/lunch and staple items
+- **Shopping**: the selected week's list grouped by aisle (the aisle list below, in store order), with dinner, breakfast/lunch and staple items
   together and a small source label. Check items off, add or remove items. Prices only show when the row has both
   `price_cents` and `price_source`; the product line links to `walmart_product_url` when set. Shows the week's total
   and the monthly budget bar. Names are short (`Sour cream`); any detail lives in `shopping_list_items.note` and shows
   as one small muted line under the name (tap it to see all of it). An item without a verified price shows a muted
-  **Pricing…** tag (a `needs_price` request is waiting) or **Unpriced** where the price would be.
+  **Pricing…** tag (a `needs_price` request is waiting) or **Unpriced** where the price would be. The **Add an item**
+  form guesses the aisle from the name (same chip as Staples).
+- **Aisles** (one list everywhere: Shopping, Staples, presets): Produce, Dairy & Eggs, Meat, Bakery & Bread, Pantry,
+  Canned Goods, Frozen, Snacks, Drinks, Breakfast & Cereal, Condiments & Spices, Household & Cleaning, Paper Goods,
+  Personal Care, Baby, Pet, Other. Older names still display in the right place (Dairy → Dairy & Eggs, Bakery →
+  Bakery & Bread, Spices → Condiments & Spices, Breakfast basics → Breakfast & Cereal, Household → Household &
+  Cleaning); migration `grocery_aisles` re-sorted the existing staples and list rows. `categorize.js` is the free,
+  offline categorizer: ~1,000 grocery phrases and common brands, plural forms, sizes/counts ignored ("2% milk, 1 gal"),
+  the head noun wins ("chicken broth" → Canned Goods, "peanut butter" → Pantry), "frozen"/"canned" win outright, then
+  run-together words ("papertowels") and small typos ("bananna", "cerial"); anything else → Other.
 - **Staples**: snacks, drinks, breakfast basics and household items bought outside of meals (table `staples`), grouped by
-  category. Add / edit / remove, check the ones you want, then **Add N checked to list** (or **Add** per item). Adds go
+  aisle. **Add a staple** = type the name: the aisle is guessed as you type and shown as an editable chip ("Snacks ·
+  Auto-sorted · tap to change"; once you pick one it stays). Quantity/unit are optional (tucked away). **Add to staples
+  + this week's list** saves the staple *and* puts it on the selected week's list (`source = 'staple'`, `staple_id`,
+  no duplicates by staple or name), then sends **one** `needs_price` event covering both the staple and its list row.
+  Typing a name that's already a staple just makes sure it's on the list. With no list for the week it saves the staple
+  only. Edit / remove, check the ones you want, then **Add N checked to list** (or **Add** per item). Adds go
   to the selected week's list (Walmart) with `source = 'staple'`, copying the staple's price fields if it has them; a
   staple is never added twice to the same week.
   - **Weekly staples**: tap ☆ on a staple (or tick **★ Weekly** in its form) to set `staples.is_weekly`. The
@@ -76,10 +90,23 @@ backed by a Supabase project.
     they're all on the list it shrinks to a small "✓ Weekly staples added" line; with no weekly staples it's hidden.
 - **Recipes**: search, add and edit household recipes, including a **Short description** (`recipes.description`, one
   plain line under ~60 characters, max 120) that This week shows under the dinner name. Tap the ☆ star on a recipe (or **Add to favorites** on its
-  page or in the Swap picker) to make it a go-to dinner.
+  page or in the Swap picker) to make it a go-to dinner. Every card has a solid baby-blue **Open recipe ↗** button
+  with the site name (`source_name`, else the web address) that opens `source_url` in a new tab; without a
+  `source_url` it shows a muted "No link yet". Tapping the rest of the card opens the household copy.
+  - **Add from photo** (📷, opens the camera; "Choose a saved photo" picks one from the phone): the browser shrinks the
+    photo to at most 1600 px on the long side, JPEG quality 0.8 (typically 100–600 KB), uploads it to the **private**
+    Storage bucket `recipe-photos` as `<household_id>/<uuid>.jpg` (JPEG only, 3 MB cap; RLS lets only members of that
+    household read/write it), then inserts a placeholder recipe (`title = 'New recipe from photo'`,
+    `status = 'pending_photo'`, `photo_path`) and **one** `app_events` row `recipe_photo` (`payload: recipe_id,
+    photo_path, bucket, bytes, requested_by`). The card sits at the top, muted, with a thumbnail and "Reading photo…".
+    The recipe page always shows the saved photo (signed URL, 1 hour) as the record, plus "Open full size ↗".
+    Pending recipes aren't offered in the Swap picker or meal recipe links until they're ready.
 - **Settings**: dinners per week, leftover nights, default plates, approval mode, dietary exclusions, preferred
   stores, **monthly grocery budget** (`households.monthly_budget_cents`, default $350), and a link to
-  **Breakfast & lunch presets** (`#/presets`: add/edit/delete presets with per-day ingredients). Also lists members,
+  **Breakfast & lunch presets**: two equal buttons, **Add a breakfast** and **Add a lunch**, open the preset form with
+  that meal type chosen (`#/presets/new-breakfast`, `#/presets/new-lunch`); they stay visible once presets exist, with
+  the saved ones listed under **Breakfast** and **Lunch** headings (`#/presets` has the same buttons and full editing
+  with per-day ingredients). Also lists members,
   **Notifications** (below), and lets you sign out.
 - **Notifications** (Web Push, Settings → Notifications): **Turn on notifications** asks for permission, subscribes
   this browser with the app's VAPID public key (`config.js`) and saves the subscription in `push_subscriptions`
@@ -170,9 +197,30 @@ update public.meal_presets set ingredients = jsonb_set(ingredients, '{0}', ingre
 update public.app_events set processed_at = now() where event_type = 'needs_price' and processed_at is null and household_id = '…';
 ```
 
+**Aisles.** Write `category` (list rows, staples, ingredient objects) as one of the 17 aisles above, exactly as spelled.
+
+**Recipe from photo.** Find work with the view `public.pending_photo_recipes` (security invoker; members only, not anon):
+`recipe_id, household_id, title, photo_path, bucket, created_at, event_id, requested_at, requested_by`, one row per
+recipe with `status = 'pending_photo'` (`event_id` is the latest unprocessed `recipe_photo` event, if any). For each:
+
+1. Download the photo from Storage bucket `recipe-photos` at `photo_path` (service role, or a signed URL).
+2. Read it and extract the **title**, **ingredients** (one string per line, as on the card), **instructions** (steps,
+   one per line), **servings**, prep/cook minutes if shown, and a **short description** (one plain line, < 60 chars).
+   Only fill fields the person hasn't already typed (title still `New recipe from photo`, empty lists/fields).
+3. `update public.recipes set title = …, description = …, ingredients = '[…]'::jsonb, instructions = …, servings = …,
+   status = 'ready' where id = …;` (keep `photo_path`: the photo stays as the record). If it can't be read, set
+   `status = 'photo_failed'` instead (the app then asks the person to type it in).
+4. `update public.app_events set processed_at = now() where id = <event_id>;`
+
+Keep usage modest: one pass per photo, only rows in the view, no re-reads of `ready` recipes.
+
+```sql
+select * from public.pending_photo_recipes order by created_at;
+```
+
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`, `grocery_aisles`, `recipe_photos`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and
@@ -194,7 +242,8 @@ budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing 
 - `config.js` only has the Supabase URL and the **publishable** key, which is meant to be public.
   All access is enforced by Row Level Security: signed-in members only see their own household.
 - No analytics, trackers, or third-party requests except the Supabase API and the supabase-js module from jsDelivr
-  (pinned version, restricted by a Content-Security-Policy).
+  (pinned version, restricted by a Content-Security-Policy). Images may load from the Supabase origin (signed
+  recipe-photo URLs); the `recipe-photos` bucket is private.
 
 ## Local development
 
