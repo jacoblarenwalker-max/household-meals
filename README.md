@@ -218,9 +218,30 @@ Keep usage modest: one pass per photo, only rows in the view, no re-reads of `re
 select * from public.pending_photo_recipes order by created_at;
 ```
 
+**Calories per serving.** Every dinner recipe, saved breakfast/lunch preset and breakfast/lunch item gets
+`calories_per_serving` (integer kcal), `calories_approx` (true shows "~" in the app), `calories_basis` (one line: batch
+total and main ingredients ÷ plates), `calories_note` (why it's approximate) and `calories_checked_at`, on
+`recipes`, `meal_presets` and `meal_plan_items` (migrations `recipe_calories`, `meal_calories`). Work it out from the
+real amounts: for dinners use `meal_ingredient_costs.amount_used` at the planned batch (else the recipe's ingredient
+list), multiply by standard **USDA FoodData Central** kcal values (or the Nutrition Facts of the exact Walmart
+product, e.g. FESTIVE ground turkey FDC 2018476 = 250 kcal / 4 oz), and divide the batch total by the plates it makes
+(dinner + leftover plates; recipe servings for unplanned recipes). Breakfast/lunch: the preset's or item's
+ingredients for one serving. Never invent a number: if an ingredient can't be matched or an amount is a range or
+estimate, use the midpoint/estimate, set `calories_approx = true` and say so in `calories_note`; if it can't be
+worked out at all, leave it null (the app then shows no tag). The app clears a preset's count when its name or
+ingredients change, and a breakfast/lunch row falls back to its preset's (or linked recipe's) count.
+**The Saturday planning routine must fill in calories for every new recipe it plans**, and the Sunday/Tuesday passes
+(and the wake routine) should fill new breakfasts, lunches and photo recipes. Find what's missing with:
+
+```sql
+select * from public.uncounted_calories where household_id = '733cd381-babb-490c-863f-ee16ee942ad4' order by kind, created_at;
+update public.recipes set calories_per_serving = 397, calories_approx = false, calories_basis = 'Batch of 4 plates ~1,587 kcal: …',
+  calories_note = null, calories_checked_at = now() where id = '…';   -- same columns on meal_presets / meal_plan_items
+```
+
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`, `grocery_aisles`, `recipe_photos`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`, `grocery_aisles`, `recipe_photos`, `recipe_calories`, `meal_calories`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and
@@ -234,7 +255,7 @@ translucency). Tokens live at the top of `styles.css`: baby blue `#4BA3E3` for h
 headers), primary buttons, the active tab, today's date block and the Makes-leftovers pill, always with navy
 `#0F2747` text (5.5:1); deeper blue `#1B5E96` for links and blue text on white; page `#FAFAF8`, white cards
 `#FFFFFF`, borders `#D8D3CA`; beige `#EADFCC` / tan `#DCC9A8` for other date blocks, Leftover pills, price tags and
-dividers; ink `#1C2A3F`, slate `#505B6B`. Green `#2D7D5C` = locked/success, brick `#A8432F` = needs work / over
+dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C2A3F`, slate `#505B6B`. Green `#2D7D5C` = locked/success, brick `#A8432F` = needs work / over
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 ## Security

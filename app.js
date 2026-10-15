@@ -426,6 +426,25 @@ function dinnerCosts(slots, items, ingCosts = []) {
   store.cents = Math.round(store.cents);
   return { cost, loose, store, meals, fallback };
 }
+// calories per serving (meal bot fills recipes.calories_per_serving from USDA / label values); "~" = approximate
+function calTag(r) {
+  const n = Number(r?.calories_per_serving);
+  if (!r || r.calories_per_serving == null || !Number.isFinite(n) || n <= 0) return null;
+  const approx = !!r.calories_approx;
+  const why = ['Calories per serving, from the ingredients and amounts'];
+  if (r.calories_note) why.push(r.calories_note);
+  return h('span', {
+    class: `chip cal${approx ? ' partial' : ''}`, title: why.join('. '),
+    'aria-label': `${approx ? 'About ' : ''}${Math.round(n)} calories per serving`,
+  }, `${approx ? '~' : ''}${Math.round(n)} cal`);
+}
+// breakfast/lunch rows: their own count, else the saved preset's, else a linked recipe's
+function mealCalSource(item, recipe) {
+  if (item?.calories_per_serving != null) return item;
+  const p = item?.preset_id ? S.presets.find((x) => x.id === item.preset_id) : null;
+  if (p?.calories_per_serving != null) return p;
+  return recipe || null;
+}
 function costTag(c) {
   if (!c || !c.items) return null;
   if (!c.cents && c.unpriced) return h('span', { class: 'chip cost none', title: 'Prices not checked yet' }, 'not priced yet');
@@ -492,7 +511,7 @@ function nightsCard(ws, d) {
         return h('div', { class: 'stack' },
           h('div', { class: 'title' }, title),
           desc,
-          h('div', { class: 'meta' }, pill, s.is_leftover_night ? null : costTag(cost[s.id]), h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)));
+          h('div', { class: 'meta' }, pill, s.is_leftover_night ? null : costTag(cost[s.id]), calTag(recipe), h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)));
       });
       rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, h('div', { class: 'daycol' }, dayCol, swaps), h('div', { class: 'stack' }, body), pickerEl));
       pickerEl = null;
@@ -1070,7 +1089,7 @@ function smallMealsCard(ws, d) {
           onclick: () => { editing = null; picking = key; draw(); card.querySelector('.picker .pchip, .picker button')?.focus(); },
         },
         h('span', { class: 'mlabel' }, label),
-        h('span', { class: 'mtitle' }, item ? item.title : '+ Add', meta ? h('span', { class: 'mmeta' }, meta) : null)));
+        h('span', { class: 'mtitle' }, item ? item.title : '+ Add', meta || item ? h('span', { class: 'mmeta' }, item ? calTag(mealCalSource(item, recipe)) : null, meta ? ` ${meta}` : null) : null)));
       }
       rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, dayBadge(date), lines));
     }
@@ -1090,7 +1109,8 @@ function presetPicker(d, ws, date, type, label, item, close, freeText) {
     busy(true);
     try {
       const dates = allDays.checked ? Array.from({ length: 7 }, (_, i) => addDays(ws, i)) : [date];
-      const rows = dates.map((dt) => ({ week_id: d.week.id, household_id: S.household.id, date: dt, meal_type: type, title: p.title, preset_id: p.id, ingredients: ingList(p.ingredients), recipe_id: null }));
+      const rows = dates.map((dt) => ({ week_id: d.week.id, household_id: S.household.id, date: dt, meal_type: type, title: p.title, preset_id: p.id, ingredients: ingList(p.ingredients), recipe_id: null,
+        calories_per_serving: p.calories_per_serving ?? null, calories_approx: !!p.calories_approx, calories_basis: p.calories_basis ?? null, calories_note: p.calories_note ?? null }));
       const { data, error } = await sb.from('meal_plan_items').upsert(rows, { onConflict: 'week_id,date,meal_type' }).select();
       if (error) throw error;
       for (const m of data || []) { const i = d.meals.findIndex((x) => x.id === m.id || (x.date === m.date && x.meal_type === m.meal_type)); if (i >= 0) d.meals[i] = m; else d.meals.push(m); }
@@ -1214,7 +1234,7 @@ function mealEditor(d, date, type, label, item, close) {
     save.disabled = true;
     try {
       const row = { week_id: d.week.id, household_id: S.household.id, date, meal_type: type, title: t, recipe_id: recipe.value || null };
-      const q = item ? sb.from('meal_plan_items').update({ title: row.title, recipe_id: row.recipe_id, preset_id: null, ingredients: [] }).eq('id', item.id) : sb.from('meal_plan_items').insert(row);
+      const q = item ? sb.from('meal_plan_items').update({ title: row.title, recipe_id: row.recipe_id, preset_id: null, ingredients: [], calories_per_serving: null, calories_approx: false, calories_basis: null, calories_note: null }).eq('id', item.id) : sb.from('meal_plan_items').insert(row);
       const { data, error } = await q.select().single();
       if (error) throw error;
       const i = d.meals.findIndex((m) => m.id === data.id);
@@ -1588,7 +1608,7 @@ function renderRecipes() {
         h('a', { class: 'recipe-main', href: `#/recipes/${encodeURIComponent(r.id)}` },
           h('div', { class: 'title' }, r.title),
           r.description ? h('div', { class: 'desc' }, r.description) : null,
-          h('div', { class: 'small muted' }, [mins ? `${mins} min` : null, r.servings ? `serves ${r.servings}` : null].filter(Boolean).join(' · ') || null),
+          h('div', { class: 'small muted row-cal' }, calTag(r), [mins ? `${mins} min` : null, r.servings ? `serves ${r.servings}` : null].filter(Boolean).join(' · ') || null),
           r.tags?.length ? h('div', { class: 'row wrap', style: null }, r.tags.map((t) => h('span', { class: 'chip tag' }, t))) : null),
         url ? h('a', { class: 'btn open-recipe', href: url, target: '_blank', rel: 'noopener noreferrer', 'aria-label': `Open ${r.title} on ${site || 'the original site'} (opens in a new tab)` },
           h('span', { class: 'or-label' }, 'Open recipe ↗'), site ? h('span', { class: 'or-site' }, site) : null)
@@ -1714,6 +1734,9 @@ function renderRecipeForm(id) {
     h('div', { class: 'content' },
       h('div', { class: 'row spread' }, h('a', { href: '#/recipes' }, '← All recipes'),
         h('div', { class: 'row' }, !isNew && isReadyRecipe(r) ? favToggle : null, url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open original ↗') : null)),
+      !isNew && calTag(r) ? h('section', { class: 'card cal-card' }, h('div', { class: 'row' }, calTag(r), h('span', { class: 'small' }, 'per serving')),
+        r.calories_basis ? h('p', { class: 'small muted' }, r.calories_basis) : null,
+        r.calories_note ? h('p', { class: 'small muted' }, r.calories_note) : null) : null,
       photoCard, form),
     tabbar('recipes'));
 }
@@ -1734,7 +1757,7 @@ function presetGroups(back) {
     if (!list.length) return null;
     return h('div', { class: `preset-group-mini ${type}` }, h('h3', null, label),
       list.map((p) => h('a', { class: 'preset-row', href: `#/presets/${encodeURIComponent(p.id)}`, onclick: go, 'aria-label': `Edit ${p.title}` },
-        h('div', { class: 'grow' }, h('div', { class: 'name' }, p.title)), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'))));
+        h('div', { class: 'grow' }, h('div', { class: 'name' }, p.title, ' ', calTag(p))), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'))));
   }));
 }
 
@@ -1750,7 +1773,7 @@ function renderPresets(arg) {
         ? list.map((p) => {
           const ings = ingList(p.ingredients);
           return h('a', { class: 'preset-row', href: `#/presets/${encodeURIComponent(p.id)}`, 'aria-label': `Edit ${p.title}` },
-            h('div', { class: 'grow' }, h('div', { class: 'name' }, p.title),
+            h('div', { class: 'grow' }, h('div', { class: 'name' }, p.title, ' ', calTag(p)),
               h('div', { class: 'small muted' }, ings.length ? ings.map(ingText).join(', ') : 'No ingredients yet')),
             h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
         })
@@ -1807,6 +1830,10 @@ function renderPresetForm(arg, back) {
     };
     if (!row.title) { msg.className = 'msg error'; msg.textContent = 'Give it a name.'; title.focus(); return; }
     if (row.ingredients.some((i) => i.quantity != null && !(i.quantity >= 0))) { msg.className = 'msg error'; msg.textContent = 'Quantities must be zero or more.'; return; }
+    // changed ingredients or name: drop the old calorie count so the meal bot works it out again
+    if (!isNew && (JSON.stringify(ingList(p.ingredients).map((i) => [i.name, i.quantity, i.unit])) !== JSON.stringify(row.ingredients.map((i) => [i.name, i.quantity, i.unit])) || p.title !== row.title)) {
+      Object.assign(row, { calories_per_serving: null, calories_approx: false, calories_basis: null, calories_note: null, calories_checked_at: null });
+    }
     save.disabled = true;
     const q = isNew
       ? sb.from('meal_presets').insert({ ...row, household_id: S.household.id, position: S.presets.reduce((m, x) => Math.max(m, x.position || 0), 0) + 1 })
