@@ -1,5 +1,17 @@
-// Service worker: only for Web Push notifications. It does not cache or intercept any requests.
+// Service worker: Web Push notifications + always-fresh app files. It never stores anything (no Cache Storage):
+// the page, scripts and styles are fetched network-first, revalidating past the browser's HTTP cache, so an
+// installed Home Screen app picks up a new version on its next open. Bump SW_VERSION with each app release.
+const SW_VERSION = 'cal1';
 self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return; // Supabase / jsDelivr untouched
+  const fresh = req.mode === 'navigate' || /\.(js|css|html|webmanifest)$/.test(url.pathname) || url.pathname.endsWith('/');
+  if (!fresh) return;
+  event.respondWith(fetch(req, { cache: 'no-cache' }).catch(() => fetch(req)));
+});
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
 self.addEventListener('push', (event) => {

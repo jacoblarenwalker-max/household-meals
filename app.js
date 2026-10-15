@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=cal1';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=cal1';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -129,7 +129,16 @@ function takeWeekParam(href) {
 if (takeWeekParam(location.href)) history.replaceState(null, '', location.pathname + (location.hash || '#/week'));
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker', e));
+  // a new sw.js takes over right away (skipWaiting + clients.claim); reload once so the fresh app code runs
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded) return;
+    const ae = document.activeElement;
+    if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return; // don't wipe something being typed
+    reloaded = true; location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((r) => r.update()).catch((e) => console.warn('service worker', e));
   // tapping a notification while the app is already open
   navigator.serviceWorker.addEventListener('message', (e) => {
     if (e.data?.type !== 'open' || !S.member) return;

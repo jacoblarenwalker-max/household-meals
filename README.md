@@ -258,6 +258,11 @@ headers), primary buttons, the active tab, today's date block and the Makes-left
 dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C2A3F`, slate `#505B6B`. Green `#2D7D5C` = locked/success, brick `#A8432F` = needs work / over
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
+Updates: `index.html` loads `app.js?v=…` and `styles.css?v=…` (and `app.js` imports `config.js?v=…` /
+`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `cal1`). `sw.js` activates
+immediately (skipWaiting + clients.claim), fetches the page/JS/CSS network-first past the HTTP cache (no offline
+copies), and the app reloads once on `controllerchange`, so the iPhone Home Screen app updates on its next open.
+
 ## Security
 
 - `config.js` only has the Supabase URL and the **publishable** key, which is meant to be public.
