@@ -221,7 +221,7 @@ select * from public.pending_photo_recipes order by created_at;
 **Calories per serving.** Every dinner recipe, saved breakfast/lunch preset and breakfast/lunch item gets
 `calories_per_serving` (integer kcal), `calories_approx` (true shows "~" in the app), `calories_basis` (one line: batch
 total and main ingredients ÷ plates), `calories_note` (why it's approximate) and `calories_checked_at`, on
-`recipes`, `meal_presets` and `meal_plan_items` (migrations `recipe_calories`, `meal_calories`). Work it out from the
+`recipes`, `meal_presets` and `meal_plan_items` (migrations `recipe_calories`, `meal_calories`, `recipe_delete_guard`). Work it out from the
 real amounts: for dinners use `meal_ingredient_costs.amount_used` at the planned batch (else the recipe's ingredient
 list), multiply by standard **USDA FoodData Central** kcal values (or the Nutrition Facts of the exact Walmart
 product, e.g. FESTIVE ground turkey FDC 2018476 = 250 kcal / 4 oz), and divide the batch total by the plates it makes
@@ -238,6 +238,12 @@ select * from public.uncounted_calories where household_id = '733cd381-babb-490c
 update public.recipes set calories_per_serving = 397, calories_approx = false, calories_basis = 'Batch of 4 plates ~1,587 kcal: …',
   calories_note = null, calories_checked_at = now() where id = '…';   -- same columns on meal_presets / meal_plan_items
 ```
+
+**Deleting recipes.** The recipe page has a Delete recipe button (confirm dialog) for any status, including
+`pending_photo` / `photo_failed`. It deletes the `recipes` row, then the photo at `photo_path` in `recipe-photos`
+(members may delete their own household's rows and photos under RLS). A recipe on any week's dinner plan can't be
+deleted: trigger `recipes_delete_guard` raises `RECIPE_SCHEDULED` and the app asks to swap that dinner first.
+This week embeds recipes as `recipe:recipes(…)` with an explicit column list: add any new recipe column it shows there.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
@@ -259,7 +265,7 @@ dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 Updates: `index.html` loads `app.js?v=…` and `styles.css?v=…` (and `app.js` imports `config.js?v=…` /
-`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `cal1`). `sw.js` activates
+`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `cal2`). `sw.js` activates
 immediately (skipWaiting + clients.claim), fetches the page/JS/CSS network-first past the HTTP cache (no offline
 copies), and the app reloads once on `controllerchange`, so the iPhone Home Screen app updates on its next open.
 

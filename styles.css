@@ -158,6 +158,9 @@ button.secondary:hover, button.warn:hover { background: var(--beige); border-col
 button.ghost { background: transparent; color: var(--accent-text); border-color: transparent; padding: 8px 12px; min-height: 40px; }
 button.ghost:hover { background: var(--beige); color: var(--navy); }
 button.ghost.danger { color: var(--danger); }
+button.danger-btn { background: #A8432F; color: #FFFFFF; border: 0; font-weight: 750; }
+button.danger-btn:hover { background: #8E3726; }
+.delete-recipe { margin-top: 4px; }
 button.ghost.danger:hover { background: var(--beige); color: var(--danger); }
 button.icon {
   padding: 6px; min-height: 44px; min-width: 44px; font-size: 1.4rem; line-height: 1; font-weight: 700;

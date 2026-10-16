@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=cal1';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=cal1';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=cal2';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=cal2';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -61,6 +61,7 @@ function friendlyError(err) {
   if (code === '55000' || /locked/i.test(msg)) return 'This week is locked, so votes can no longer change.';
   if (code === '23514') return 'One of the values is out of range or not allowed. ' + msg;
   if (code === '23505') return 'That already exists.';
+  if (/RECIPE_SCHEDULED/.test(msg)) return 'This recipe is on a week’s dinner plan. Swap that dinner for something else first, then delete it.';
   if (/Invalid login credentials/i.test(msg)) return 'Email or password is incorrect.';
   if (/Email not confirmed/i.test(msg)) return 'Please confirm your email first (check your inbox), then sign in.';
   if (/Failed to fetch|NetworkError/i.test(msg)) return "Couldn't reach the server. Check your connection and try again.";
@@ -315,7 +316,7 @@ async function loadWeekData(ws) {
   if (error) throw error;
   if (!week) return { week: null, slots: [], votes: [], meals: [], items: [], ingCosts: [] };
   const [slots, votes, meals, items, ingCosts] = await Promise.all([
-    sb.from('week_slots').select('*, recipe:recipes(id, title, description, source_url, source_name)').eq('week_id', week.id).order('date').order('position'),
+    sb.from('week_slots').select('*, recipe:recipes(id, title, description, source_url, source_name, calories_per_serving, calories_approx, calories_basis, calories_note)').eq('week_id', week.id).order('date').order('position'),
     sb.from('votes').select('*').eq('week_id', week.id),
     sb.from('meal_plan_items').select('*').eq('week_id', week.id).order('date'),
     sb.from('shopping_list_items').select('id, name, quantity, unit, category, source, position, checked, meal_plan_item_id, staple_id, preset_generated, price_cents, price_source, recipe_id, meal_shares').eq('week_id', week.id),
@@ -453,6 +454,19 @@ function mealCalSource(item, recipe) {
   const p = item?.preset_id ? S.presets.find((x) => x.id === item.preset_id) : null;
   if (p?.calories_per_serving != null) return p;
   return recipe || null;
+}
+// delete a recipe (any status) and its photo; refused while it's on a dinner plan (DB trigger enforces it too)
+async function deleteRecipe(r) {
+  const { count, error: ce } = await sb.from('week_slots').select('id', { count: 'exact', head: true }).eq('recipe_id', r.id);
+  if (ce) throw ce;
+  if (count) throw new Error('RECIPE_SCHEDULED');
+  const { error } = await sb.from('recipes').delete().eq('id', r.id);
+  if (error) throw error;
+  if (r.photo_path) {
+    const { error: pe } = await sb.storage.from(PHOTO_BUCKET).remove([r.photo_path]);
+    if (pe) console.warn('photo delete', pe);
+  }
+  S.recipes = S.recipes.filter((x) => x.id !== r.id);
 }
 function costTag(c) {
   if (!c || !c.items) return null;
@@ -1746,7 +1760,15 @@ function renderRecipeForm(id) {
       !isNew && calTag(r) ? h('section', { class: 'card cal-card' }, h('div', { class: 'row' }, calTag(r), h('span', { class: 'small' }, 'per serving')),
         r.calories_basis ? h('p', { class: 'small muted' }, r.calories_basis) : null,
         r.calories_note ? h('p', { class: 'small muted' }, r.calories_note) : null) : null,
-      photoCard, form),
+      photoCard, form,
+      !isNew ? h('section', { class: 'card stack delete-recipe' },
+        h('p', { class: 'small muted' }, r.photo_path ? 'Deletes this recipe and its saved photo for good.' : 'Deletes this recipe for good.'),
+        h('button', { type: 'button', class: 'danger-btn block', onclick: async (e) => {
+          if (!confirm(`Delete “${r.title}”${r.photo_path ? ' and its photo' : ''}? This can’t be undone.`)) return;
+          e.currentTarget.disabled = true;
+          try { await deleteRecipe(r); toast(`Deleted “${r.title}”.`); location.hash = '#/recipes'; }
+          catch (err) { e.currentTarget.disabled = false; toast(friendlyError(err), true); }
+        } }, 'Delete recipe')) : null),
     tabbar('recipes'));
 }
 
