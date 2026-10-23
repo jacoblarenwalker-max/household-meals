@@ -100,6 +100,14 @@ function defaultWeekStart() {
   return dow === 0 ? cur : next;
 }
 
+function weekTitle(ws) {
+  const cur = mondayOf(todayISO());
+  if (ws === cur) return 'This week';
+  if (ws === addDays(cur, 7)) return 'Next week';
+  if (ws === addDays(cur, -7)) return 'Last week';
+  return `Week of ${fmtD(ws, { month: 'short', day: 'numeric' })}`;
+}
+
 const STATUS = {
   draft: { label: 'Draft', text: 'The meal bot is still putting this week together.' },
   voting: { label: 'Voting', text: 'Plan is ready. It locks when every voter approves.' },
@@ -348,7 +356,7 @@ async function loadWeekData(ws) {
 
 async function renderWeek() {
   const content = h('div', { class: 'content' }, h('div', { class: 'card muted center' }, 'Loading this week…'));
-  mount(topbar('This week', weekPicker(renderWeek)), content, tabbar('week'));
+  mount(topbar(weekTitle(S.weekStart), weekPicker(renderWeek)), content, tabbar('week'));
   const ws = S.weekStart;
   let d;
   try { d = await loadWeekData(ws); } catch (err) { content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(err))); return; }
