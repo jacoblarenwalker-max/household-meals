@@ -35,17 +35,23 @@ backed by a Supabase project.
   voter's vote and comment, and who still needs to vote. You can **Approve** or mark **Needs work** with a comment.
   Voting is disabled once the week is locked. The database decides when a week locks (every voter approves in
   `multi` mode).
-  - **Swap** (under each dinner's date): opens a searchable picker with **Favorites** (default: `recipes.is_favorite`)
-    and **All recipes** tabs. Both lists sort most often / most recently planned first; one tap puts that recipe in
-    the slot. Pending photo recipes stay hidden until they're ready.
-    Swapping is a member edit of `week_slots`, so a database trigger (`week_slots_after_user_change`) reopens the
-    vote: a locked week goes back to voting (the app asks to confirm first), every approve vote for that week is
-    cleared (needs-work comments stay), and the week locks again only when every voter approves (multi mode). The
-    same trigger removes unchecked dinner rows (`source` null or `dinner`) for a recipe no longer in the week and
-    writes a `check_now` app_event (`payload.source = 'dinner_swap'`) so the meal bot **immediately** rebuilds the
-    dinner part of the list, prices any new unpriced dinner items, refreshes `meal_ingredient_costs`, and fills
-    calories for the swapped-in recipe when missing (do not leave that for Sunday). Breakfast, lunch, staple, manual
-    and preset rows are never touched. Meal bot writes (non-`authenticated` roles) don't fire it.
+  - **Swap** (under each dinner's date): opens a searchable picker with **Replace** / **Add a side**, plus **Favorites**
+    (default: `recipes.is_favorite`) and **All recipes** tabs. Both lists sort most often / most recently planned
+    first. **Replace** sets `week_slots.recipe_id` (keeps an existing side unless it would duplicate the new main).
+    **Add a side** sets `week_slots.side_recipe_id` so two recipes share the night (e.g. Alfredo + breadsticks); This
+    week shows the side under the main as `+ …`, with combined portion cost and combined calories when both have
+    numbers. Pending photo/link recipes stay hidden until they're ready. Leftover nights inherit both recipes from
+    the cooked night via `leftover_from_slot_id`.
+    Swapping or adding/removing a side is a member edit of `week_slots`, so a database trigger
+    (`week_slots_after_user_change`) reopens the vote: a locked week goes back to voting (the app asks to confirm
+    first), every approve vote for that week is cleared (needs-work comments stay), and the week locks again only
+    when every voter approves (multi mode). The same trigger removes unchecked dinner rows (`source` null or
+    `dinner`) for a main recipe no longer in the week and writes a `check_now` app_event
+    (`payload.source = 'dinner_swap'`, including `old_side_recipe_id` / `new_side_recipe_id`) so the meal bot
+    **immediately** rebuilds the dinner part of the list for **both** recipes on the slot, prices any new unpriced
+    dinner items, refreshes `meal_ingredient_costs`, and fills calories when missing (do not leave that for Sunday).
+    Breakfast, lunch, staple, manual and preset rows are never touched. Meal bot writes (non-`authenticated` roles)
+    don't fire it.
   - **Breakfast & lunch**: one simple line per day for each (table `meal_plan_items`). Tap a line to pick a saved
     **preset** in one tap (optionally "Fill whole week"), or type something else (free text, optional recipe link and
     ingredient lines). No voting, and editable even when the week is locked. Preset ingredients are per day and are
@@ -268,6 +274,23 @@ Sunday morning Walmart pass remains a backstop for anything still in `unpriced_i
 swaps, paste-a-link, photo recipes, or in-app add-item pricing. `recipe_link` / `recipe_photo` / `needs_price` /
 `dinner_swap` are meant to wake the meal bot through the same `app_events` webhook as each other.
 
+**Combined dinners (main + side).** A night may have `week_slots.recipe_id` (main) and optional
+`week_slots.side_recipe_id` (companion). On `check_now` / `dinner_swap` (and Saturday planning):
+
+1. Rebuild dinner shopping rows for **both** recipe ids on each cooked slot (ingredients from each recipe at the
+   planned plates). Put `meal_shares` on shared pantry rows across both when needed.
+2. Write `meal_ingredient_costs` rows for **both** recipes that week (same portion rules as a single dinner).
+3. Fill `calories_per_serving` on either recipe if missing. The app sums main + side on This week when both have
+   numbers (`~` if either is approximate).
+4. Leftover nights keep `leftover_from_slot_id` only — they display the cooked night's main and side; do not duplicate
+   shopping or costs on leftover nights.
+
+```sql
+-- nights with a side
+select s.date, s.recipe_id, s.side_recipe_id from public.week_slots s
+where s.week_id = '…' and s.side_recipe_id is not null;
+```
+
 **Calories per serving.** Every dinner recipe, saved breakfast/lunch preset and breakfast/lunch item gets
 `calories_per_serving` (integer kcal), `calories_approx` (true shows "~" in the app), `calories_basis` (one line: batch
 total and main ingredients ÷ plates), `calories_note` (why it's approximate) and `calories_checked_at`, on
@@ -294,11 +317,11 @@ update public.recipes set calories_per_serving = 397, calories_approx = false, c
 `photo_path` in `recipe-photos` when present (members may delete their own household's rows and photos under RLS).
 A recipe on any week's dinner plan can't be deleted: trigger `recipes_delete_guard` raises `RECIPE_SCHEDULED` and
 the app asks to swap that dinner first.
-This week embeds recipes as `recipe:recipes(…)` with an explicit column list: add any new recipe column it shows there.
+This week embeds recipes as `recipe:recipes!week_slots_recipe_id_fkey(…)` and `side_recipe:recipes!week_slots_side_recipe_id_fkey(…)` (both FKs must be hinted — PostgREST returns PGRST201 if you use bare `recipes(...)`). Add any new recipe column it shows to both embeds.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`, `grocery_aisles`, `recipe_photos`, `recipe_calories`, `meal_calories`, `recipe_delete_guard`, `recipe_links`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`, `grocery_aisles`, `recipe_photos`, `recipe_calories`, `meal_calories`, `recipe_delete_guard`, `recipe_links`, `recipe_sides`, `recipe_sides_cleanup`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and
@@ -316,7 +339,7 @@ dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 Updates: `index.html` loads `app.js?v=…` and `styles.css?v=…` (and `app.js` imports `config.js?v=…` /
-`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `combo1`). `sw.js` activates
+`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `combo2`). `sw.js` activates
 immediately (skipWaiting + clients.claim), fetches the page/JS/CSS network-first past the HTTP cache (no offline
 copies), and the app reloads once on `controllerchange`, so the iPhone Home Screen app updates on its next open.
 

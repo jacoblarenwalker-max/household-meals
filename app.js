@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=combo1';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=combo1';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=combo2';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=combo2';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -543,14 +543,16 @@ function nightsCard(ws, d) {
       const body = daySlots.map((s) => {
         const from = s.leftover_from_slot_id ? byId[s.leftover_from_slot_id] : null;
         const recipe = s.recipe || from?.recipe || null;
+        const side = s.side_recipe || from?.side_recipe || null;
         const name = recipe ? recipe.title : (s.is_leftover_night ? 'Leftovers' : 'Dinner TBD');
         const showing = detail === s.id;
-        const hasDetail = !!(recipe || s.notes);
+        const hasDetail = !!(recipe || side || s.notes);
         // tap the meal name for cooking notes and recipe links (kept off the main list so it stays short)
         const title = hasDetail ? h('button', {
           type: 'button', class: `title-btn${showing ? ' on' : ''}`, 'aria-expanded': showing ? 'true' : 'false',
           onclick: () => { detail = showing ? null : s.id; picking = null; draw(); },
         }, name) : name;
+        const sideLine = side ? h('div', { class: 'side-line' }, h('span', { class: 'side-plus', 'aria-hidden': 'true' }, '+'), ' ', side.title) : null;
         // one short line about the meal itself; leftover nights skip it
         const desc = !s.is_leftover_night && recipe?.description ? h('div', { class: 'desc' }, recipe.description) : null;
         // one clean secondary line: a single solid pill when it matters, then the plate count
@@ -563,12 +565,13 @@ function nightsCard(ws, d) {
           onclick: () => { picking = open ? null : s.id; detail = null; draw(); if (!open) card.querySelector('.dpicker input, .dpicker button')?.focus(); },
         }, 'Swap');
         swaps.push(swap);
-        if (open) pickerEl = dinnerPicker(d, s, recipe, () => { picking = null; draw(); });
-        else if (showing) pickerEl = dinnerDetail(s, recipe, () => { detail = null; draw(); });
+        if (open) pickerEl = dinnerPicker(d, s, recipe, side, () => { picking = null; draw(); });
+        else if (showing) pickerEl = dinnerDetail(s, recipe, side, () => { detail = null; draw(); });
         return h('div', { class: 'stack' },
           h('div', { class: 'title' }, title),
+          sideLine,
           desc,
-          h('div', { class: 'meta' }, pill, s.is_leftover_night ? null : costTag(cost[s.id]), calTag(recipe), h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)));
+          h('div', { class: 'meta' }, pill, s.is_leftover_night ? null : costTag(cost[s.id]), mealCalTag(recipe, side), h('span', { class: 'plates' }, `${s.plates} plate${s.plates === 1 ? '' : 's'}`)));
       });
       rows.push(h('div', { class: `night${date === today ? ' today' : ''}` }, h('div', { class: 'daycol' }, dayCol, swaps), h('div', { class: 'stack' }, body), pickerEl));
       pickerEl = null;
@@ -587,18 +590,26 @@ function nightsCard(ws, d) {
   return card;
 }
 
-// inline panel under a dinner: the bot's cooking notes plus links to the recipe
-function dinnerDetail(slot, recipe, close) {
+// inline panel under a dinner: the bot's cooking notes plus links to the recipe (and side)
+function dinnerDetail(slot, recipe, side, close) {
   const dayName = fmtD(slot.date, { weekday: 'long' });
-  const url = recipe?.source_url ? safeUrl(recipe.source_url) : null;
+  const label = recipe && side ? `${recipe.title} + ${side.title}` : (recipe ? recipe.title : 'Dinner');
+  const linksFor = (r, kind) => {
+    if (!r) return null;
+    const url = r.source_url ? safeUrl(r.source_url) : null;
+    return h('div', { class: 'row links' },
+      h('span', { class: 'small muted' }, kind),
+      url ? h('a', { class: 'btn small-btn', href: url, target: '_blank', rel: 'noopener noreferrer' }, `Open${r.source_name ? ` on ${r.source_name}` : ''} ↗`) : null,
+      h('a', { class: 'btn secondary small-btn', href: `#/recipes/${encodeURIComponent(r.id)}` }, 'Details'));
+  };
   const panel = h('div', { class: 'picker dinner ddetail', role: 'group', 'aria-label': `${dayName} dinner details` },
-    h('div', { class: 'row spread' }, h('div', { class: 'mlabel' }, `${dayName} · ${recipe ? recipe.title : 'Dinner'}`), h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close details' }, '✕')),
+    h('div', { class: 'row spread' }, h('div', { class: 'mlabel' }, `${dayName} · ${label}`), h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close details' }, '✕')),
     recipe?.description ? h('p', { class: 'small muted' }, recipe.description) : null,
+    side ? h('p', { class: 'small muted' }, 'Side: ', side.title, side.description ? ` — ${side.description}` : '') : null,
     h('div', { class: 'mlabel sub' }, 'Cooking notes'),
     slot.notes ? h('div', { class: 'cooknotes' }, slot.notes) : h('p', { class: 'small muted' }, 'No cooking notes for this night.'),
-    recipe ? h('div', { class: 'row links' },
-      url ? h('a', { class: 'btn small-btn', href: url, target: '_blank', rel: 'noopener noreferrer' }, `Open recipe${recipe.source_name ? ` on ${recipe.source_name}` : ''} ↗`) : null,
-      h('a', { class: 'btn secondary small-btn', href: `#/recipes/${encodeURIComponent(recipe.id)}` }, 'Recipe details')) : null);
+    linksFor(recipe, 'Main'),
+    linksFor(side, 'Side'));
   panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   return panel;
 }
@@ -639,11 +650,13 @@ async function recipeUsage(ids) {
   return u;
 }
 
-// inline picker on a dinner slot: Favorites (default) or All recipes, most used first, one tap to swap
-function dinnerPicker(d, slot, current, close) {
+// inline picker on a dinner slot: Favorites (default) or All recipes; Replace dinner or Add a side
+function dinnerPicker(d, slot, current, currentSide, close) {
   const dayName = fmtD(slot.date, { weekday: 'long' });
   const cur = current ? S.recipes.find((r) => r.id === current.id) || null : null;
+  let sideCur = currentSide ? S.recipes.find((r) => r.id === currentSide.id) || currentSide : null;
   let mode = 'favorites'; // 'favorites' | 'all'
+  let action = 'replace'; // 'replace' | 'side'
   const title = h('div', { class: 'mlabel' }, `Favorite dinners · ${dayName}`);
   const q = h('input', { type: 'search', placeholder: 'Search favorites', 'aria-label': 'Search favorite dinners', enterkeyhint: 'search' });
   const list = h('div', { class: 'dlist' });
@@ -651,25 +664,69 @@ function dinnerPicker(d, slot, current, close) {
   const favTab = h('button', { type: 'button', role: 'tab', class: 'on', 'aria-selected': 'true' }, 'Favorites');
   const allTab = h('button', { type: 'button', role: 'tab', 'aria-selected': 'false' }, 'All recipes');
   const tabs = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'Which recipes to browse' }, favTab, allTab);
+  const replaceTab = h('button', { type: 'button', role: 'tab', class: 'on', 'aria-selected': 'true' }, 'Replace');
+  const sideTab = h('button', { type: 'button', role: 'tab', 'aria-selected': 'false' }, 'Add a side');
+  const actionTabs = h('div', { class: 'seg action-seg', role: 'tablist', 'aria-label': 'Replace dinner or add a side' }, replaceTab, sideTab);
   let usage = {};
   const busy = (on) => wrap.querySelectorAll('button').forEach((b) => { b.disabled = on; });
-  const pick = async (r) => {
-    if (cur && r.id === cur.id && !slot.is_leftover_night) { close(); return; }
-    if (d.week.status === 'locked' && !confirm(`This week is locked. Swapping ${dayName}’s dinner reopens voting, so everyone has to approve the plan again. Swap to “${r.title}”?`)) return;
-    busy(true);
-    const { data, error } = await sb.from('week_slots').update({ recipe_id: r.id, is_leftover_night: false, leftover_from_slot_id: null }).eq('id', slot.id).select('id');
-    if (error) { busy(false); return toast(friendlyError(error), true); }
-    if (!data?.length) { busy(false); return toast('Couldn’t swap that dinner. You may not have access to this week.', true); }
-    toast(`${dayName}: ${r.title}. ${d.week.status === 'draft' ? '' : 'Approvals were reset. '}The shopping list updates when the meal bot checks.`);
+  const afterChange = async (msg) => {
+    toast(msg);
     await refreshWeeks();
     renderWeek();
   };
+  const pick = async (r) => {
+    if (action === 'side') {
+      if (cur && r.id === cur.id) return toast('Pick a different recipe for the side — it can’t be the same as the main.', true);
+      if (sideCur && r.id === sideCur.id && !slot.is_leftover_night) { close(); return; }
+      if (d.week.status === 'locked' && !confirm(`This week is locked. Adding a side to ${dayName} reopens voting. Add “${r.title}”?`)) return;
+      busy(true);
+      const { data, error } = await sb.from('week_slots').update({
+        side_recipe_id: r.id, is_leftover_night: false, leftover_from_slot_id: null,
+      }).eq('id', slot.id).select('id');
+      if (error) { busy(false); return toast(friendlyError(error), true); }
+      if (!data?.length) { busy(false); return toast('Couldn’t add that side. You may not have access to this week.', true); }
+      return afterChange(`${dayName}: ${cur ? cur.title + ' + ' : ''}${r.title}. ${d.week.status === 'draft' ? '' : 'Approvals were reset. '}Shopping list updates right away when the meal bot wakes.`);
+    }
+    if (cur && r.id === cur.id && !slot.is_leftover_night) { close(); return; }
+    if (d.week.status === 'locked' && !confirm(`This week is locked. Swapping ${dayName}’s dinner reopens voting, so everyone has to approve the plan again. Swap to “${r.title}”?`)) return;
+    busy(true);
+    // keep the side unless it would duplicate the new main
+    const patch = { recipe_id: r.id, is_leftover_night: false, leftover_from_slot_id: null };
+    if (sideCur && sideCur.id === r.id) patch.side_recipe_id = null;
+    const { data, error } = await sb.from('week_slots').update(patch).eq('id', slot.id).select('id');
+    if (error) { busy(false); return toast(friendlyError(error), true); }
+    if (!data?.length) { busy(false); return toast('Couldn’t swap that dinner. You may not have access to this week.', true); }
+    const withSide = sideCur && sideCur.id !== r.id ? ` + ${sideCur.title}` : '';
+    return afterChange(`${dayName}: ${r.title}${withSide}. ${d.week.status === 'draft' ? '' : 'Approvals were reset. '}Shopping list updates right away when the meal bot wakes.`);
+  };
+  const removeSide = async () => {
+    if (!sideCur) return;
+    if (d.week.status === 'locked' && !confirm(`This week is locked. Removing the side from ${dayName} reopens voting. Continue?`)) return;
+    busy(true);
+    const { data, error } = await sb.from('week_slots').update({ side_recipe_id: null }).eq('id', slot.id).select('id');
+    if (error) { busy(false); return toast(friendlyError(error), true); }
+    if (!data?.length) { busy(false); return toast('Couldn’t remove that side.', true); }
+    sideCur = null;
+    return afterChange(`${dayName}: side removed. ${d.week.status === 'draft' ? '' : 'Approvals were reset. '}`);
+  };
   const drawCur = () => {
     curRow.replaceChildren();
-    if (!cur) return;
-    curRow.append(h('span', { class: 'small muted grow' }, 'Now: ', h('strong', null, cur.title)),
-      h('button', { type: 'button', class: `ghost fav-toggle${cur.is_favorite ? ' on' : ''}`, onclick: async (e) => { if (await toggleFavorite(cur, e.currentTarget)) { drawCur(); drawList(); } } },
-        cur.is_favorite ? '★ Favorite' : '☆ Add to favorites'));
+    if (!cur && !sideCur) return;
+    const bits = [];
+    if (cur) {
+      bits.push(h('div', { class: 'dcur-line' },
+        h('span', { class: 'small muted grow' }, 'Main: ', h('strong', null, cur.title)),
+        h('button', { type: 'button', class: `ghost fav-toggle${cur.is_favorite ? ' on' : ''}`, onclick: async (e) => { if (await toggleFavorite(cur, e.currentTarget)) { drawCur(); drawList(); } } },
+          cur.is_favorite ? '★ Favorite' : '☆ Add to favorites')));
+    }
+    if (sideCur) {
+      bits.push(h('div', { class: 'dcur-line' },
+        h('span', { class: 'small muted grow' }, 'Side: ', h('strong', null, sideCur.title)),
+        h('button', { type: 'button', class: 'ghost', onclick: removeSide }, 'Remove')));
+    } else if (cur) {
+      bits.push(h('p', { class: 'small muted' }, 'Tip: tap “Add a side” to combine another recipe on this night.'));
+    }
+    curRow.append(...bits);
   };
   const usageText = (r) => { const u = usage[r.id]; return u ? `Made ${u.n} time${u.n === 1 ? '' : 's'}, last ${fmtD(u.last, { month: 'short', day: 'numeric' })}` : 'Not planned yet'; };
   const pool = () => mode === 'favorites'
@@ -708,15 +765,29 @@ function dinnerPicker(d, slot, current, close) {
     const rs = rs0.filter((r) => !term || [r.title, ...(r.tags || [])].join(' ').toLowerCase().includes(term))
       .sort((a, b) => (usage[b.id]?.n || 0) - (usage[a.id]?.n || 0) || (usage[b.id]?.last || '').localeCompare(usage[a.id]?.last || '') || a.title.localeCompare(b.title));
     list.replaceChildren(...(rs.length ? rs.map((r) => {
-      const on = cur?.id === r.id && !slot.is_leftover_night;
+      const on = action === 'side'
+        ? (sideCur?.id === r.id && !slot.is_leftover_night)
+        : (cur?.id === r.id && !slot.is_leftover_night);
       return h('button', { type: 'button', class: `pchip drow${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false', onclick: () => pick(r) },
         h('span', { class: 'pt' }, r.title), h('span', { class: 'pm' }, usageText(r), mode === 'all' && r.is_favorite ? ' · ★' : ''));
     }) : [h('p', { class: 'small muted' }, mode === 'favorites' ? 'No favorites match.' : 'No recipes match.')]));
   };
   q.addEventListener('input', drawList);
+  const setAction = (next) => {
+    if (action === next) return;
+    action = next;
+    const rep = action === 'replace';
+    replaceTab.className = rep ? 'on' : ''; replaceTab.setAttribute('aria-selected', rep ? 'true' : 'false');
+    sideTab.className = rep ? '' : 'on'; sideTab.setAttribute('aria-selected', rep ? 'false' : 'true');
+    title.textContent = (mode === 'favorites' ? 'Favorite dinners' : 'All recipes') + ` · ${dayName}` + (rep ? '' : ' · side');
+    drawList();
+  };
+  replaceTab.addEventListener('click', () => setAction('replace'));
+  sideTab.addEventListener('click', () => setAction('side'));
   const wrap = h('div', { class: 'picker dinner dpicker', role: 'group', 'aria-label': `Pick a favorite dinner for ${dayName}` },
     h('div', { class: 'row spread' }, title, h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close picker' }, '✕')),
     curRow,
+    actionTabs,
     tabs,
     h('div', { class: 'dsearch' }, q),
     list,

@@ -406,7 +406,15 @@ label.btn.photo-btn.busy { opacity: .6; pointer-events: none; }
 .photo-record .missing { display: block; padding: 24px; text-align: center; color: var(--muted); }
 .pp-banner { background: var(--fill); border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); padding: 10px 14px; color: var(--muted); }
 .pp-banner strong { color: var(--sky-deep); }
+
 .pp-banner.failed strong { color: var(--brick); }
+/* combined dinner: main + side on This week */
+.side-line { color: var(--slate); font-size: .9375rem; font-weight: 650; margin-top: -2px; }
+.side-line .side-plus { color: var(--sky-deep); font-weight: 800; }
+.dcur-line { display: flex; align-items: center; gap: 8px; width: 100%; }
+.dcur-line + .dcur-line { margin-top: 6px; }
+.action-seg { margin-bottom: 2px; }
+
 .recipe-card .title { font-weight: 700; font-size: 1.0625rem; letter-spacing: -.01em; }
 .recipe-card .row { gap: 6px; margin-top: 4px; }
 .search { position: relative; }
