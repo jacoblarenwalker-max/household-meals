@@ -70,7 +70,8 @@ backed by a Supabase project.
   any detail lives in `shopping_list_items.note` and shows as one small muted line under the name (tap it to see all
   of it). An item without a verified price shows a muted **Pricing…** tag (a `needs_price` request is waiting) or
   **Unpriced** where the price would be. The **Add an item** form guesses the aisle from the name (same chip as
-  Staples).
+  Staples). While Shopping (or Staples) is open, Supabase Realtime mirrors
+  `shopping_list_items` for that week so both phones see check-offs, adds and deletes right away.
 - **Aisles** (one list everywhere: Shopping, Staples, presets): Produce, Dairy & Eggs, Meat, Bakery & Bread, Pantry,
   Canned Goods, Frozen, Snacks, Drinks, Breakfast & Cereal, Condiments & Spices, Household & Cleaning, Paper Goods,
   Personal Care, Baby, Pet, Other. Older names still display in the right place (Dairy → Dairy & Eggs, Bakery →
@@ -346,7 +347,7 @@ dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 Updates: `index.html` loads `app.js?v=…` and `styles.css?v=…` (and `app.js` imports `config.js?v=…` /
-`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `shopweek1`). `sw.js` activates
+`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `live1`). `sw.js` activates
 immediately (skipWaiting + clients.claim), fetches the page/JS/CSS network-first past the HTTP cache (no offline
 copies), and the app reloads once on `controllerchange`, so the iPhone Home Screen app updates on its next open.
 

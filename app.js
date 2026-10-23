@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=shopweek1';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=shopweek1';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live1';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live1';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -204,11 +204,12 @@ async function refreshRecipes() {
 
 /* ---------------- shell ---------------- */
 function render() {
-  if (!S.session) return renderAuth();
-  if (!S.member || !S.household) return renderUnlinked();
+  if (!S.session) { stopListLive(); return renderAuth(); }
+  if (!S.member || !S.household) { stopListLive(); return renderUnlinked(); }
   const { view, arg } = route();
   if (view === 'shop') return renderShop();
   if (view === 'staples') return renderStaples();
+  stopListLive(); // only Shopping / Staples keep the live list channel
   if (view === 'recipes') return arg ? renderRecipeForm(arg) : renderRecipes();
   if (view === 'settings') return renderSettings();
   if (view === 'presets') return renderPresets(arg);
@@ -897,6 +898,39 @@ function checkNowCard(week) {
   return h('section', { class: 'card stack' }, btn, status);
 }
 
+
+/* ---------------- live list sync (Supabase Realtime) ---------------- */
+// While Shopping or Staples is open, mirror shopping_list_items for the selected week so
+// Jacob and Sophie see each other's check-offs, adds and deletes without refreshing.
+let listLiveChannel = null;
+let listLiveWeekId = null;
+let listLiveHandler = null; // always the latest render's callback (avoids stale `items` after re-render)
+function stopListLive() {
+  if (listLiveChannel) {
+    try { sb.removeChannel(listLiveChannel); } catch { /* ignore */ }
+    listLiveChannel = null; listLiveWeekId = null; listLiveHandler = null;
+  }
+}
+function watchListWeek(weekId, onEvent) {
+  listLiveHandler = onEvent;
+  if (!weekId) { stopListLive(); return; }
+  if (listLiveChannel && listLiveWeekId === weekId) return; // keep channel; handler already swapped
+  stopListLive();
+  listLiveHandler = onEvent;
+  listLiveWeekId = weekId;
+  const ch = sb.channel(`list:${weekId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_list_items', filter: `week_id=eq.${weekId}` }, (payload) => {
+      try { listLiveHandler?.(payload); } catch (e) { console.warn('list live', e); }
+    })
+    .subscribe((status) => {
+      // Clean reconnect: supabase-js resubscribes; if the channel is dead, drop our handle so the next render restarts it
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        if (listLiveChannel === ch) { listLiveChannel = null; listLiveWeekId = null; }
+      }
+    });
+  listLiveChannel = ch;
+}
+
 /* ---------------- shopping ---------------- */
 // one aisle list for Shopping, Staples and presets (store-walk order); old names like "Dairy" map onto it
 const CATEGORIES = GROCERY_CATEGORIES;
@@ -932,6 +966,7 @@ async function renderShop() {
   if (route().view !== 'shop' || ws !== S.weekStart) return;
   if (error) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(error)));
   if (!week) {
+    stopListLive();
     return content.replaceChildren(h('div', { class: 'card stack center' }, h('h2', null, 'No list for this week'),
       h('p', { class: 'muted' }, 'A shopping list appears once the meal bot plans this week.')), checkNowCard(null));
   }
@@ -1069,6 +1104,25 @@ async function renderShop() {
   hideBtn.addEventListener('click', () => { hideChecked = !hideChecked; sessionStorage.setItem('hideChecked', hideChecked ? '1' : '0'); hideBtn.textContent = hideChecked ? 'Show checked' : 'Hide checked'; draw(); });
 
   draw(); drawTotals();
+  watchListWeek(week.id, (payload) => {
+    if (route().view !== 'shop' || ws !== S.weekStart) return;
+    const ev = payload.eventType;
+    if (ev === 'INSERT') {
+      const row = payload.new; if (!row?.id) return;
+      if (items.some((i) => i.id === row.id)) return; // our own add already pushed it
+      items.push(row); draw(); drawTotals();
+    } else if (ev === 'UPDATE') {
+      const row = payload.new; if (!row?.id) return;
+      const i = items.findIndex((x) => x.id === row.id);
+      if (i < 0) items.push(row); else items[i] = { ...items[i], ...row };
+      draw(); drawTotals();
+    } else if (ev === 'DELETE') {
+      const id = payload.old?.id; if (!id) return;
+      const i = items.findIndex((x) => x.id === id);
+      if (i < 0) return;
+      items.splice(i, 1); draw(); drawTotals();
+    }
+  });
   content.replaceChildren(
     h('div', { class: 'shop-head' }, budgetSlot, weekTotal),
     remind,
@@ -1679,6 +1733,28 @@ async function renderStaples() {
   resetAdd();
   draw();
   refreshBudget();
+  // Keep On-list / Add chips in sync when the other phone checks or removes a staple row
+  if (week) {
+    watchListWeek(week.id, (payload) => {
+      if (!live()) return;
+      const ev = payload.eventType;
+      if (ev === 'INSERT') {
+        const row = payload.new; if (!row?.id) return;
+        if (items.some((i) => i.id === row.id)) return;
+        items.push(row); draw(); refreshBudget();
+      } else if (ev === 'UPDATE') {
+        const row = payload.new; if (!row?.id) return;
+        const i = items.findIndex((x) => x.id === row.id);
+        if (i < 0) items.push(row); else items[i] = { ...items[i], ...row };
+        draw(); refreshBudget();
+      } else if (ev === 'DELETE') {
+        const id = payload.old?.id; if (!id) return;
+        const i = items.findIndex((x) => x.id === id);
+        if (i < 0) return;
+        items.splice(i, 1); draw(); refreshBudget();
+      }
+    });
+  } else stopListLive();
   content.replaceChildren(
     budgetSlot,
     weeklyCard,
