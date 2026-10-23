@@ -72,9 +72,10 @@ backed by a Supabase project.
   **Unpriced** where the price would be. The **Add an item** form guesses the aisle from the name (same chip as
   Staples). While Shopping (or Staples) is open, Supabase Realtime mirrors
   `shopping_list_items` for that week so both phones see check-offs, adds and deletes on the open
-  screen (the live handler patches the in-memory list and re-draws; it does not wait for a tab
-  change). The Realtime socket gets the session JWT via `setAuth`, and if the channel drops the
-  app soft-resyncs without leaving Shopping.
+  screen (patches the in-memory list; own check echoes are ignored so a tap never rebuilds the
+  list). Checkbox taps update the row in place and do not remount Shopping. Pending-price polling
+  also patches prices in place — it must not call `renderShop()` (that caused scroll jumps and
+  unchecked boxes).
 - **Aisles** (one list everywhere: Shopping, Staples, presets): Produce, Dairy & Eggs, Meat, Bakery & Bread, Pantry,
   Canned Goods, Frozen, Snacks, Drinks, Breakfast & Cereal, Condiments & Spices, Household & Cleaning, Paper Goods,
   Personal Care, Baby, Pet, Other. Older names still display in the right place (Dairy → Dairy & Eggs, Bakery →

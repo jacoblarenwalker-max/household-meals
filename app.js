@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live2';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live2';
-import { applyListLivePayload } from './list-live.js?v=live2';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live3';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live3';
+import { applyListLivePayload } from './list-live.js?v=live3';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -905,36 +905,32 @@ function checkNowCard(week) {
 
 
 /* ---------------- live list sync (Supabase Realtime) ---------------- */
-// While Shopping or Staples is open, mirror shopping_list_items for the selected week so
-// Jacob and Sophie see each other's check-offs, adds and deletes without refreshing.
-// Bindings live on `listLive` (not only closures) so a late Realtime event always patches the
-// array and DOM from the *currently mounted* Shopping/Staples screen — tab switches used to be
-// the only refresh because they re-ran renderShop()'s full fetch.
+// While Shopping or Staples is open, mirror shopping_list_items for the selected week.
+// Bindings live on `listLive` so events patch the mounted screen (no tab change needed).
+// No soft full-list refetch here — that raced with checkbox taps and reverted checks / jumped scroll.
 const listLive = {
   gen: 0,
   view: null,       // 'shop' | 'staples' | null
   weekId: null,
-  weekStart: null,  // S.weekStart when bound (shop guard)
-  items: null,      // mutable array currently on screen
-  redraw: null,     // () => patch DOM from items
+  weekStart: null,
+  items: null,
+  redraw: null,     // full list rebuild (caller / withShopScroll preserves scroll)
 };
 let listLiveChannel = null;
 let listLiveWeekId = null;
 let listLiveStatus = null;
 let listLiveRetryTimer = null;
-let listLivePollTimer = null;
 
 // applyListLivePayload imported from list-live.js
 function syncRealtimeAuth(session) {
   try {
     if (session?.access_token) sb.realtime.setAuth(session.access_token);
-    else sb.realtime.setAuth(null); // clear
+    else sb.realtime.setAuth(null);
   } catch (e) { console.warn('realtime auth', e); }
 }
 
 function stopListLive() {
   if (listLiveRetryTimer) { clearTimeout(listLiveRetryTimer); listLiveRetryTimer = null; }
-  if (listLivePollTimer) { clearInterval(listLivePollTimer); listLivePollTimer = null; }
   if (listLiveChannel) {
     try { sb.removeChannel(listLiveChannel); } catch { /* ignore */ }
   }
@@ -949,6 +945,15 @@ function bindListLive({ view, weekId, weekStart, items, redraw }) {
   listLive.redraw = typeof redraw === 'function' ? redraw : null;
 }
 
+function shopScroller() {
+  return document.querySelector('.app .content');
+}
+function withShopScroll(fn) {
+  const el = shopScroller();
+  const top = el ? el.scrollTop : 0;
+  try { fn(); } finally { if (el) el.scrollTop = top; }
+}
+
 function onListLiveEvent(payload) {
   const items = listLive.items;
   if (!items || !listLive.redraw) return;
@@ -957,8 +962,8 @@ function onListLiveEvent(payload) {
   } else if (listLive.view === 'staples') {
     if (route().view !== 'staples') return;
   } else return;
-  if (!applyListLivePayload(items, payload)) return;
-  try { listLive.redraw(); } catch (e) { console.warn('list live draw', e); }
+  if (!applyListLivePayload(items, payload)) return; // own check echo is a no-op — no redraw
+  try { withShopScroll(() => listLive.redraw()); } catch (e) { console.warn('list live draw', e); }
 }
 
 function scheduleListLiveRetry(weekId) {
@@ -969,53 +974,18 @@ function scheduleListLiveRetry(weekId) {
     if (listLive.view !== 'shop' && listLive.view !== 'staples') return;
     if (listLive.weekId !== weekId) return;
     watchListWeek(weekId);
-  }, 1200);
-}
-
-function startListLivePoll() {
-  if (listLivePollTimer) return;
-  // Fallback only while the Realtime channel isn't SUBSCRIBED: soft-resync without changing tabs.
-  listLivePollTimer = setInterval(() => {
-    if (document.visibilityState !== 'visible') return;
-    if (listLiveStatus === 'SUBSCRIBED') {
-      clearInterval(listLivePollTimer); listLivePollTimer = null; return;
-    }
-    if (listLive.view === 'shop') softResyncShopList();
-    else if (listLive.view === 'staples' && listLive.weekId) softResyncShopList({ staplesOnly: true });
-  }, 2500);
-}
-function stopListLivePoll() {
-  if (listLivePollTimer) { clearInterval(listLivePollTimer); listLivePollTimer = null; }
-}
-
-async function softResyncShopList({ staplesOnly = false } = {}) {
-  const weekId = listLive.weekId;
-  const items = listLive.items;
-  if (!weekId || !items || !listLive.redraw) return;
-  const gen = listLive.gen;
-  const { data, error } = await sb.from('shopping_list_items').select('*').eq('week_id', weekId).order('position').order('name');
-  if (error || !data) return;
-  if (gen !== listLive.gen || listLive.weekId !== weekId || listLive.items !== items) return;
-  // Replace contents in place so closures that hold `items` stay valid
-  items.splice(0, items.length, ...data);
-  try { listLive.redraw(); } catch (e) { console.warn('list soft resync', e); }
-  if (!staplesOnly && route().view === 'shop') { /* redraw already refreshed shop */ }
+  }, 1500);
 }
 
 function watchListWeek(weekId) {
   if (!weekId) { stopListLive(); return; }
   syncRealtimeAuth(S.session);
-  // Keep a healthy channel; swap is unnecessary because onListLiveEvent reads listLive
-  if (listLiveChannel && listLiveWeekId === weekId && listLiveStatus === 'SUBSCRIBED') {
-    stopListLivePoll();
-    return;
-  }
+  if (listLiveChannel && listLiveWeekId === weekId && listLiveStatus === 'SUBSCRIBED') return;
   const keepView = listLive.view;
   const keepItems = listLive.items;
   const keepRedraw = listLive.redraw;
   const keepWs = listLive.weekStart;
   stopListLive();
-  // stopListLive cleared poll; restore bindings stopListLive does not touch listLive.* except we need poll restart
   listLive.view = keepView; listLive.items = keepItems; listLive.redraw = keepRedraw;
   listLive.weekId = weekId; listLive.weekStart = keepWs;
   listLiveWeekId = weekId;
@@ -1026,7 +996,7 @@ function watchListWeek(weekId) {
     .subscribe((status) => {
       if (listLiveChannel !== ch) return;
       listLiveStatus = status;
-      if (status === 'SUBSCRIBED') { stopListLivePoll(); return; }
+      if (status === 'SUBSCRIBED') return;
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         listLiveChannel = null; listLiveWeekId = null; listLiveStatus = null;
         try { sb.removeChannel(ch); } catch { /* ignore */ }
@@ -1034,17 +1004,13 @@ function watchListWeek(weekId) {
       }
     });
   listLiveChannel = ch;
-  startListLivePoll();
 }
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (!S.session || (listLive.view !== 'shop' && listLive.view !== 'staples')) return;
   syncRealtimeAuth(S.session);
-  if (listLive.weekId) {
-    if (!listLiveChannel || listLiveStatus !== 'SUBSCRIBED') watchListWeek(listLive.weekId);
-    softResyncShopList({ staplesOnly: listLive.view === 'staples' });
-  }
+  if (listLive.weekId && (!listLiveChannel || listLiveStatus !== 'SUBSCRIBED')) watchListWeek(listLive.weekId);
 });
 
 /* ---------------- shopping ---------------- */
@@ -1157,7 +1123,10 @@ async function renderShop() {
     }
     if (!items.length) cards.push(h('div', { class: 'card muted center' }, 'No items yet. Add one below, or tap Check now.'));
     else if (!cards.length) cards.push(h('div', { class: 'card muted center' }, 'Everything is checked off. Nice work!'));
+    const sc = shopScroller();
+    const top = sc ? sc.scrollTop : 0;
     listWrap.replaceChildren(...cards);
+    if (sc) sc.scrollTop = top;
   };
   const itemRow = (it) => {
     const qty = [it.quantity != null ? fmtQty(it.quantity) : null, it.unit].filter(Boolean).join(' ');
@@ -1186,9 +1155,17 @@ async function renderShop() {
     cb.addEventListener('change', async () => {
       const val = cb.checked;
       it.checked = val; row.classList.toggle('done', val);
+      counter.textContent = `${items.filter((i) => i.checked).length} of ${items.length} checked`;
+      // Only rebuild rows when a checked item must disappear; never remount Shopping on a tap
+      if (hideChecked && val) withShopScroll(draw);
       const { error } = await sb.from('shopping_list_items').update({ checked: val }).eq('id', it.id);
-      if (error) { it.checked = !val; cb.checked = !val; row.classList.toggle('done', !val); toast(friendlyError(error), true); return; }
-      draw();
+      if (error) {
+        it.checked = !val; cb.checked = !val; row.classList.toggle('done', !val);
+        counter.textContent = `${items.filter((i) => i.checked).length} of ${items.length} checked`;
+        toast(friendlyError(error), true);
+        if (hideChecked) withShopScroll(draw);
+        return;
+      }
     });
     return row;
   };
@@ -1260,19 +1237,43 @@ async function requestPrices(refs, weekId = null) {
   if (error) for (const r of items) pendingPrice.delete(priceKey(r.table, r.id, r.index)); // shows as "Unpriced" instead
   else watchPendingPrices(); // refresh the open tab once the meal bot fills prices
 }
-// After a needs_price insert, briefly re-check so "Pricing…" flips to a dollar amount when the bot finishes
-// (the Wake on app_events webhook should process it right away; this only refreshes the UI).
+// After a needs_price insert, briefly re-check so "Pricing…" flips to a dollar amount when the bot finishes.
+// Never remount Shopping/Staples here — a full renderShop() wiped checkbox state and jumped scroll.
 let priceWatchTimer = null;
+async function refreshPendingPricesInPlace() {
+  if (!pendingPrice.size) return;
+  if (listLive.view === 'shop' && listLive.weekId && listLive.items) {
+    const { data, error } = await sb.from('shopping_list_items')
+      .select('id, price_cents, price_source, price_verified_at, walmart_product_url')
+      .eq('week_id', listLive.weekId);
+    if (error || !data || listLive.view !== 'shop') return;
+    let changed = false;
+    for (const row of data) {
+      const it = listLive.items.find((i) => i.id === row.id);
+      if (!it) continue;
+      if (it.price_cents === row.price_cents && it.price_source === row.price_source) {
+        if (hasPrice(row)) pendingPrice.delete(priceKey('shopping_list_items', it.id));
+        continue;
+      }
+      Object.assign(it, row);
+      changed = true;
+      if (hasPrice(it)) pendingPrice.delete(priceKey('shopping_list_items', it.id));
+    }
+    if (changed) withShopScroll(() => listLive.redraw?.());
+    return;
+  }
+  const view = route().view;
+  // Staples / This week: rarer; full refresh is OK off the shopping checklist
+  if (view === 'staples') renderStaples();
+  else if (view === 'week') renderWeek();
+}
 function watchPendingPrices() {
   if (priceWatchTimer) return;
   let n = 0;
   priceWatchTimer = setInterval(async () => {
     n++;
     if (n > 15 || !pendingPrice.size) { clearInterval(priceWatchTimer); priceWatchTimer = null; return; }
-    const view = route().view;
-    if (view === 'shop') renderShop();
-    else if (view === 'staples') renderStaples();
-    else if (view === 'week') renderWeek();
+    await refreshPendingPricesInPlace();
   }, 8000);
 }
 const rowPriceRefs = (rows) => rows.filter((r) => r && !hasPrice(r)).map((r) => ({ table: 'shopping_list_items', id: r.id, name: r.name }));
