@@ -368,6 +368,23 @@ label.btn.photo-btn { position: relative; background: var(--surface); color: var
 label.btn.photo-btn:hover { background: var(--beige); color: var(--navy); border-color: var(--sky-edge); }
 label.btn.photo-btn:focus-within { outline: 2px solid var(--navy); outline-offset: 2px; }
 label.btn.photo-btn.busy { opacity: .6; pointer-events: none; }
+/* paste a recipe URL (same spirit as Add from photo) */
+.link-add {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: stretch;
+  background: var(--surface); border: 2px solid var(--sky-edge); border-radius: var(--radius);
+  padding: 8px; margin-top: 2px;
+}
+.link-add input {
+  margin: 0; border: 0; background: transparent; min-width: 0; font-size: 1rem; color: var(--ink);
+  padding: 8px 10px;
+}
+.link-add input:focus { outline: none; }
+.link-add .btn {
+  margin: 0; min-height: 44px; padding: 8px 16px; background: var(--sky); color: var(--navy);
+  border: 1px solid var(--sky-edge); border-radius: 999px; font-weight: 750;
+}
+.link-add .btn:hover { background: var(--sky-hover); color: var(--navy); }
+.link-add.busy { opacity: .6; pointer-events: none; }
 .photo-hint { margin: -4px 2px 0; }
 .photo-hint .linkish { display: inline; font-weight: 650; color: var(--accent-text); text-decoration: underline; cursor: pointer; }
 .photo-status:empty { display: none; }
@@ -376,6 +393,10 @@ label.btn.photo-btn.busy { opacity: .6; pointer-events: none; }
 .recipe-card.photo-pending { grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 14px; background: var(--fill); border-style: dashed; }
 .recipe-card.photo-pending .title { color: var(--muted); font-weight: 650; }
 .pp-thumb { width: 64px; height: 64px; border-radius: 10px; object-fit: cover; background: var(--beige); display: block; border: 1px solid var(--line-strong); }
+.pp-thumb.link {
+  display: grid; place-items: center; font-size: 1.5rem; background: var(--sky); color: var(--navy);
+  border-color: var(--sky-edge);
+}
 .pp-text { display: grid; gap: 2px; min-width: 0; }
 .pp-status { color: var(--sky-deep); font-weight: 700; }
 .photo-pending:not(.failed) .pp-status::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--sky); vertical-align: middle; animation: pp-pulse 1.4s ease-in-out infinite; }

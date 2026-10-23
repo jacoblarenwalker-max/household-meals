@@ -42,9 +42,10 @@ backed by a Supabase project.
     vote: a locked week goes back to voting (the app asks to confirm first), every approve vote for that week is
     cleared (needs-work comments stay), and the week locks again only when every voter approves (multi mode). The
     same trigger removes unchecked dinner rows (`source` null or `dinner`) for a recipe no longer in the week and
-    writes a `check_now` app_event (`payload.source = 'dinner_swap'`) so the meal bot rebuilds the dinner part of the
-    list. Breakfast, lunch, staple, manual and preset rows are never touched. Meal bot writes (non-`authenticated`
-    roles) don't fire it.
+    writes a `check_now` app_event (`payload.source = 'dinner_swap'`) so the meal bot **immediately** rebuilds the
+    dinner part of the list, prices any new unpriced dinner items, refreshes `meal_ingredient_costs`, and fills
+    calories for the swapped-in recipe when missing (do not leave that for Sunday). Breakfast, lunch, staple, manual
+    and preset rows are never touched. Meal bot writes (non-`authenticated` roles) don't fire it.
   - **Breakfast & lunch**: one simple line per day for each (table `meal_plan_items`). Tap a line to pick a saved
     **preset** in one tap (optionally "Fill whole week"), or type something else (free text, optional recipe link and
     ingredient lines). No voting, and editable even when the week is locked. Preset ingredients are per day and are
@@ -102,6 +103,12 @@ backed by a Supabase project.
     photo_path, bucket, bytes, requested_by`). The card sits at the top, muted, with a thumbnail and "Reading photo…".
     The recipe page always shows the saved photo (signed URL, 1 hour) as the record, plus "Open full size ↗".
     Pending recipes aren't offered in the Swap picker or meal recipe links until they're ready.
+  - **Add from link** (paste box under the add buttons): accepts an `https://` recipe URL, including short links like
+    `pin.it/…`. On submit the app inserts a placeholder recipe (`title = 'New recipe from link'`,
+    `status = 'pending_link'`, `source_url` = the pasted URL) and **one** `app_events` row `recipe_link`
+    (`payload: recipe_id, url, requested_by`). The card sits at the top with "Reading link…" (hostname shown when
+    known). Failed reads use `status = 'link_failed'`. Same pending rules as photo recipes: hidden from Swap until
+    `ready`. Delete works for `pending_link` / `link_failed` too (same guard if the recipe is on a dinner plan).
 - **Settings**: dinners per week, leftover nights, default plates, approval mode, dietary exclusions, preferred
   stores, **monthly grocery budget** (`households.monthly_budget_cents`, default $350), and a link to
   **Breakfast & lunch presets**: two equal buttons, **Add a breakfast** and **Add a lunch**, open the preset form with
@@ -219,6 +226,48 @@ Keep usage modest: one pass per photo, only rows in the view, no re-reads of `re
 select * from public.pending_photo_recipes order by created_at;
 ```
 
+**Recipe from link.** Find work with the view `public.pending_link_recipes` (security invoker; members only, not anon):
+`recipe_id, household_id, title, url, created_at, event_id, requested_at, requested_by`, one row per recipe with
+`status = 'pending_link'` (`event_id` is the latest unprocessed `recipe_link` event, if any). For each:
+
+1. Fetch `url`. If it is a Pinterest short link (`pin.it/…` or `pinterest.com/pin/…`), resolve redirects first and use
+   the **destination recipe page** (the real blog/site), not the Pinterest wrapper.
+2. Read the page and extract the **title**, **ingredients** (one string per line), **instructions** (steps, one per
+   line), **servings**, prep/cook minutes if shown, a **short description** (< 60 chars), and set `source_name` to the
+   site name. Keep `source_url` as the final recipe URL (after pin resolution). Only fill fields the person hasn't
+   already typed (title still `New recipe from link`, empty lists/fields).
+3. Work out **calories per serving** the same way as other recipes (USDA / package Nutrition Facts; `~` + note when
+   approximate). Never invent a number.
+4. `update public.recipes set title = …, description = …, source_name = …, source_url = …, ingredients = '[…]'::jsonb,
+   instructions = …, servings = …, calories_per_serving = …, calories_approx = …, calories_basis = …,
+   calories_note = …, calories_checked_at = now(), status = 'ready' where id = …;` If the page can't be fetched or
+   parsed, set `status = 'link_failed'` instead (the app then asks them to type it in).
+5. `update public.app_events set processed_at = now() where id = <event_id>;`
+
+Keep usage modest: one pass per link, only rows in the view, no re-reads of `ready` recipes.
+
+```sql
+select * from public.pending_link_recipes order by created_at;
+```
+
+**Handle app_events immediately (do not wait for Sunday).** The Wake on app event webhook (and any routine that
+polls unprocessed `app_events`) should process these **as soon as they appear**, not batch them to the Sunday price
+check or other scheduled passes:
+
+| `event_type` | What to do right away |
+|---|---|
+| `recipe_link` | Fill the recipe from `pending_link_recipes` (above), mark event processed. |
+| `recipe_photo` | Fill the recipe from `pending_photo_recipes`, mark event processed. |
+| `needs_price` | Price every item in `payload.items` (lowest-cost walmart.com, no store selected), mark processed. |
+| `check_now` with `payload.source = 'dinner_swap'` | Rebuild **only** dinner shopping rows for that week (`only_dinner_rows`), then price any new unpriced dinner items, write/refresh `meal_ingredient_costs` for the swapped-in dinner, and fill `calories_per_serving` on that recipe if missing. Mark the event processed. |
+| `check_now` (other) | Full sync for the week as usual. |
+
+A member dinner **swap** already inserts that `check_now` / `dinner_swap` row via trigger
+`week_slots_after_user_change` (migration `favorites_and_dinner_swaps`); the app does not need a second event. The
+Sunday morning Walmart pass remains a backstop for anything still in `unpriced_items`, not the primary path for
+swaps, paste-a-link, photo recipes, or in-app add-item pricing. `recipe_link` / `recipe_photo` / `needs_price` /
+`dinner_swap` are meant to wake the meal bot through the same `app_events` webhook as each other.
+
 **Calories per serving.** Every dinner recipe, saved breakfast/lunch preset and breakfast/lunch item gets
 `calories_per_serving` (integer kcal), `calories_approx` (true shows "~" in the app), `calories_basis` (one line: batch
 total and main ingredients ÷ plates), `calories_note` (why it's approximate) and `calories_checked_at`, on
@@ -241,14 +290,15 @@ update public.recipes set calories_per_serving = 397, calories_approx = false, c
 ```
 
 **Deleting recipes.** The recipe page has a Delete recipe button (confirm dialog) for any status, including
-`pending_photo` / `photo_failed`. It deletes the `recipes` row, then the photo at `photo_path` in `recipe-photos`
-(members may delete their own household's rows and photos under RLS). A recipe on any week's dinner plan can't be
-deleted: trigger `recipes_delete_guard` raises `RECIPE_SCHEDULED` and the app asks to swap that dinner first.
+`pending_photo` / `photo_failed` / `pending_link` / `link_failed`. It deletes the `recipes` row, then the photo at
+`photo_path` in `recipe-photos` when present (members may delete their own household's rows and photos under RLS).
+A recipe on any week's dinner plan can't be deleted: trigger `recipes_delete_guard` raises `RECIPE_SCHEDULED` and
+the app asks to swap that dinner first.
 This week embeds recipes as `recipe:recipes(…)` with an explicit column list: add any new recipe column it shows there.
 
 Schema changes are in `supabase/migrations/` (applied to the project as `add_staples`, `add_meal_plan_items`,
 `shopping_list_items_source`, `budget_and_prices`, `meal_presets`, `favorites_and_dinner_swaps`,
-`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`, `grocery_aisles`, `recipe_photos`, `recipe_calories`, `meal_calories`).
+`push_and_descriptions`, `recipe_descriptions`, `meal_cost_shares`, `meal_ingredient_costs`, `staples_weekly`, `item_notes_and_unpriced`, `sunday_vote_reminder`, `grocery_aisles`, `recipe_photos`, `recipe_calories`, `meal_calories`, `recipe_delete_guard`, `recipe_links`).
 
 Icons: J+S (Jacob + Sophie) chef-hat lettering on solid baby blue. `icon.svg` (rounded, purpose "any"),
 `icon-full.svg` (full-bleed square, source of `apple-touch-icon.png` 180×180; iOS rounds the corners itself) and
@@ -266,7 +316,7 @@ dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 Updates: `index.html` loads `app.js?v=…` and `styles.css?v=…` (and `app.js` imports `config.js?v=…` /
-`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `swap1`). `sw.js` activates
+`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `combo1`). `sw.js` activates
 immediately (skipWaiting + clients.claim), fetches the page/JS/CSS network-first past the HTTP cache (no offline
 copies), and the app reloads once on `controllerchange`, so the iPhone Home Screen app updates on its next open.
 

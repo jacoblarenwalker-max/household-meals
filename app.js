@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=swap1';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=swap1';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=combo1';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=combo1';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -316,7 +316,7 @@ async function loadWeekData(ws) {
   if (error) throw error;
   if (!week) return { week: null, slots: [], votes: [], meals: [], items: [], ingCosts: [] };
   const [slots, votes, meals, items, ingCosts] = await Promise.all([
-    sb.from('week_slots').select('*, recipe:recipes(id, title, description, source_url, source_name, calories_per_serving, calories_approx, calories_basis, calories_note)').eq('week_id', week.id).order('date').order('position'),
+    sb.from('week_slots').select('*, recipe:recipes!week_slots_recipe_id_fkey(id, title, description, source_url, source_name, calories_per_serving, calories_approx, calories_basis, calories_note), side_recipe:recipes!week_slots_side_recipe_id_fkey(id, title, description, source_url, source_name, calories_per_serving, calories_approx, calories_basis, calories_note)').eq('week_id', week.id).order('date').order('position'),
     sb.from('votes').select('*').eq('week_id', week.id),
     sb.from('meal_plan_items').select('*').eq('week_id', week.id).order('date'),
     sb.from('shopping_list_items').select('id, name, quantity, unit, category, source, position, checked, meal_plan_item_id, staple_id, preset_generated, price_cents, price_source, recipe_id, meal_shares').eq('week_id', week.id),
@@ -381,8 +381,12 @@ function dayBadge(date) {
 // `store` is what the week's dinner rows cost at the store.
 function dinnerCosts(slots, items, ingCosts = []) {
   const cooked = slots.filter((s) => !s.is_leftover_night && s.recipe_id);
+  // a slot counts toward every recipe it uses (main and optional side)
   const byRecipe = {};
-  for (const s of cooked) (byRecipe[s.recipe_id] ||= []).push(s.id);
+  for (const s of cooked) {
+    (byRecipe[s.recipe_id] ||= []).push(s.id);
+    if (s.side_recipe_id) (byRecipe[s.side_recipe_id] ||= []).push(s.id);
+  }
   const list = Object.fromEntries(cooked.map((s) => [s.id, { cents: 0, items: 0, unpriced: 0 }]));
   const loose = { cents: 0, items: 0, unpriced: 0 };
   const store = { cents: 0, items: 0, unpriced: 0 };
@@ -421,9 +425,22 @@ function dinnerCosts(slots, items, ingCosts = []) {
   const cost = {};
   let fallback = 0;
   for (const s of cooked) {
-    const p = portion[s.recipe_id];
-    if (p) cost[s.id] = { cents: Math.round(p.cents / byRecipe[s.recipe_id].length), items: p.items, unpriced: p.unpriced, est: p.est, portion: true };
-    else { const c = list[s.id]; cost[s.id] = { cents: Math.round(c.cents), items: c.items, unpriced: c.unpriced, est: c.items > 0, portion: false }; if (c.items) fallback++; }
+    const rids = [s.recipe_id, s.side_recipe_id].filter(Boolean);
+    const parts = rids.map((rid) => portion[rid]).filter(Boolean);
+    if (parts.length) {
+      let cents = 0, items = 0, unpriced = 0, est = false;
+      for (const rid of rids) {
+        const p = portion[rid];
+        if (!p) continue;
+        cents += p.cents / byRecipe[rid].length;
+        items += p.items; unpriced += p.unpriced; if (p.est) est = true;
+      }
+      cost[s.id] = { cents: Math.round(cents), items, unpriced, est, portion: true };
+    } else {
+      const c = list[s.id];
+      cost[s.id] = { cents: Math.round(c.cents), items: c.items, unpriced: c.unpriced, est: c.items > 0, portion: false };
+      if (c.items) fallback++;
+    }
   }
   const meals = { cents: 0, est: false, unpriced: 0, portion: 0 };
   for (const c of Object.values(cost)) {
@@ -448,6 +465,23 @@ function calTag(r) {
     'aria-label': `${approx ? 'About ' : ''}${Math.round(n)} calories per serving`,
   }, `${approx ? '~' : ''}${Math.round(n)} cal`);
 }
+// main + optional side on one night: sum when both have numbers
+function mealCalTag(main, side) {
+  if (!side) return calTag(main);
+  const a = Number(main?.calories_per_serving);
+  const b = Number(side?.calories_per_serving);
+  const hasA = main && main.calories_per_serving != null && Number.isFinite(a) && a > 0;
+  const hasB = side && side.calories_per_serving != null && Number.isFinite(b) && b > 0;
+  if (!hasA) return calTag(side);
+  if (!hasB) return calTag(main);
+  const approx = !!(main.calories_approx || side.calories_approx);
+  const n = Math.round(a + b);
+  return h('span', {
+    class: `chip cal${approx ? ' partial' : ''}`,
+    title: `${main.title}: ${Math.round(a)} + ${side.title}: ${Math.round(b)}`,
+    'aria-label': `${approx ? 'About ' : ''}${n} calories per serving (main and side)`,
+  }, `${approx ? '~' : ''}${n} cal`);
+}
 // breakfast/lunch rows: their own count, else the saved preset's, else a linked recipe's
 function mealCalSource(item, recipe) {
   if (item?.calories_per_serving != null) return item;
@@ -455,9 +489,9 @@ function mealCalSource(item, recipe) {
   if (p?.calories_per_serving != null) return p;
   return recipe || null;
 }
-// delete a recipe (any status) and its photo; refused while it's on a dinner plan (DB trigger enforces it too)
+// delete a recipe (any status, including pending_photo / pending_link / failed) and its photo; refused while it's on a dinner plan (DB trigger enforces it too)
 async function deleteRecipe(r) {
-  const { count, error: ce } = await sb.from('week_slots').select('id', { count: 'exact', head: true }).eq('recipe_id', r.id);
+  const { count, error: ce } = await sb.from('week_slots').select('id', { count: 'exact', head: true }).or(`recipe_id.eq.${r.id},side_recipe_id.eq.${r.id}`);
   if (ce) throw ce;
   if (count) throw new Error('RECIPE_SCHEDULED');
   const { error } = await sb.from('recipes').delete().eq('id', r.id);
@@ -1574,7 +1608,11 @@ const PHOTO_BUCKET = 'recipe-photos';
 const PHOTO_MAX_PX = 1600;
 const PHOTO_QUALITY = 0.8;
 const isPendingPhoto = (r) => r?.status === 'pending_photo';
+const isPendingLink = (r) => r?.status === 'pending_link';
+const isFailedRecipe = (r) => r?.status === 'photo_failed' || r?.status === 'link_failed';
+const isPendingRecipe = (r) => isPendingPhoto(r) || isPendingLink(r);
 const isReadyRecipe = (r) => !r?.status || r.status === 'ready';
+const linkHost = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; } };
 async function decodeImage(file) {
   try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch { /* older Safari: fall back below */ }
   const dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(fr.error); fr.readAsDataURL(file); });
@@ -1629,6 +1667,29 @@ async function addRecipeFromPhoto(file, setStatus) {
   return rec;
 }
 
+async function addRecipeFromLink(raw, setStatus) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) throw new Error('Paste a recipe link first.');
+  const url = safeUrl(trimmed);
+  if (!url) throw new Error('That doesn’t look like a web address. Use https://… or a pin.it link.');
+  setStatus?.('Saving link…');
+  const { data: rec, error } = await sb.from('recipes').insert({
+    household_id: S.household.id,
+    title: 'New recipe from link',
+    status: 'pending_link',
+    source_url: url,
+  }).select().single();
+  if (error) throw error;
+  const ev = await sb.from('app_events').insert({
+    household_id: S.household.id, event_type: 'recipe_link',
+    payload: { recipe_id: rec.id, url, source: 'web_app',
+      requested_by_member_id: S.member?.id || null, requested_by: S.member?.display_name || null },
+  });
+  if (ev.error) console.warn('recipe_link event', ev.error); // still shows in pending_link_recipes
+  S.recipes.push(rec);
+  return rec;
+}
+
 // "Mel’s Kitchen Cafe" from source_name, else the web address ("melskitchencafe.com")
 function siteName(r, url) {
   if (r.source_name && r.source_name.trim()) return r.source_name.trim();
@@ -1642,15 +1703,25 @@ function renderRecipes() {
     const term = q.value.trim().toLowerCase();
     sessionStorage.setItem('recipeQ', q.value);
     const rs = S.recipes.filter((r) => !term || [r.title, r.description, r.source_name, ...(r.tags || [])].join(' ').toLowerCase().includes(term))
-      .sort((a, b) => isReadyRecipe(a) - isReadyRecipe(b)); // photos still being read sit on top
+      .sort((a, b) => isReadyRecipe(a) - isReadyRecipe(b)); // photos/links still being read sit on top
     list.replaceChildren(...(rs.length ? rs.map((r) => {
       if (!isReadyRecipe(r)) {
-        const failed = r.status === 'photo_failed';
-        return h('a', { class: `card recipe-card photo-pending${failed ? ' failed' : ''}`, href: `#/recipes/${encodeURIComponent(r.id)}` },
-          r.photo_path ? recipePhoto(r.photo_path, { cls: 'pp-thumb', alt: '' }) : h('span', { class: 'pp-thumb' }),
+        const failed = isFailedRecipe(r);
+        const fromLink = isPendingLink(r) || r.status === 'link_failed';
+        const host = r.source_url ? linkHost(r.source_url) : '';
+        const thumb = r.photo_path ? recipePhoto(r.photo_path, { cls: 'pp-thumb', alt: '' })
+          : h('span', { class: `pp-thumb${fromLink ? ' link' : ''}`, 'aria-hidden': 'true' }, fromLink ? '🔗' : '');
+        const status = failed
+          ? (fromLink ? 'Couldn’t read this link. Tap to type it in.' : 'Couldn’t read this photo. Tap to type it in.')
+          : (fromLink ? 'Reading link…' : 'Reading photo…');
+        const hint = failed ? '' : (fromLink
+          ? (host ? `From ${host}. The meal bot fills in the recipe.` : 'The meal bot fills in the recipe from your link.')
+          : 'The meal bot fills in the recipe from your photo.');
+        return h('a', { class: `card recipe-card photo-pending${failed ? ' failed' : ''}${fromLink ? ' link-pending' : ''}`, href: `#/recipes/${encodeURIComponent(r.id)}` },
+          thumb,
           h('div', { class: 'pp-text' }, h('div', { class: 'title' }, r.title),
-            h('div', { class: 'pp-status small' }, failed ? 'Couldn’t read this photo. Tap to type it in.' : 'Reading photo…'),
-            h('div', { class: 'small muted' }, failed ? '' : 'The meal bot fills in the recipe from your photo.')));
+            h('div', { class: 'pp-status small' }, status),
+            h('div', { class: 'small muted' }, hint)));
       }
       const mins = (r.prep_minutes || 0) + (r.cook_minutes || 0);
       const url = r.source_url ? safeUrl(r.source_url) : null;
@@ -1689,11 +1760,28 @@ function renderRecipes() {
   };
   camInput.addEventListener('change', () => onPick(camInput));
   pickInput.addEventListener('change', () => onPick(pickInput));
+  // paste a recipe URL (or pin.it); meal bot fills it in via recipe_link app_event
+  const linkInput = h('input', { type: 'url', inputmode: 'url', autocomplete: 'url', maxlength: 2000,
+    placeholder: 'Paste a recipe link or pin.it…', 'aria-label': 'Recipe link' });
+  const linkBtn = h('button', { type: 'submit', class: 'btn' }, 'Add');
+  const linkStatus = h('p', { class: 'small muted photo-status', role: 'status' });
+  const linkForm = h('form', { class: 'link-add', onsubmit: async (e) => {
+    e.preventDefault();
+    linkBtn.disabled = true; linkForm.classList.add('busy');
+    try {
+      await addRecipeFromLink(linkInput.value, (t) => { linkStatus.textContent = t; });
+      linkInput.value = ''; linkStatus.textContent = '';
+      toast('Link saved. The meal bot will read it and fill in the recipe.');
+      if (route().view === 'recipes' && !route().arg) draw();
+    } catch (err) { linkStatus.textContent = ''; toast(friendlyError(err), true); }
+    finally { linkBtn.disabled = false; linkForm.classList.remove('busy'); }
+  } }, linkInput, linkBtn);
   mount(topbar('Recipes', h('div', { class: 'row', style: null }, q)),
     h('div', { class: 'content' },
       h('div', { class: 'recipe-add' }, h('a', { class: 'btn', href: '#/recipes/new' }, '+ Add a recipe'), photoBtn),
-      h('p', { class: 'small muted photo-hint' }, 'Snap a cookbook page or recipe card and the meal bot types it in. ',
-        h('label', { class: 'linkish' }, 'Choose a saved photo', pickInput), photoStatus),
+      linkForm,
+      h('p', { class: 'small muted photo-hint' }, 'Snap a cookbook page, or paste a recipe URL (pin.it works too), and the meal bot types it in. ',
+        h('label', { class: 'linkish' }, 'Choose a saved photo', pickInput), photoStatus, linkStatus),
       list),
     tabbar('recipes'));
   // keep fresh in the background
@@ -1770,7 +1858,16 @@ function renderRecipeForm(id) {
   h('label', null, 'Instructions', f.instructions),
   h('label', null, 'Notes', f.notes),
   save);
-  // a photo recipe keeps its original photo on the page as the record (private bucket, signed URL)
+  // pending link banner (no photo); photo recipes keep the original photo as the record
+  let pendingBanner = null;
+  if (!isNew && (isPendingLink(r) || r.status === 'link_failed')) {
+    const host = r.source_url ? linkHost(r.source_url) : '';
+    pendingBanner = isPendingLink(r)
+      ? h('div', { class: 'pp-banner' }, h('strong', null, 'Reading link…'),
+          h('span', { class: 'small' }, host ? ` From ${host}.` : '', ' The meal bot will fill in the title, ingredients and steps. You can also type them in below.'))
+      : h('div', { class: 'pp-banner failed' }, h('strong', null, 'The meal bot couldn’t read this link.'),
+          h('span', { class: 'small' }, ' Type the recipe in below, or try a different URL.'));
+  }
   let photoCard = null;
   if (!isNew && r.photo_path) {
     const full = h('a', { class: 'small', target: '_blank', rel: 'noopener noreferrer', hidden: true }, 'Open full size ↗');
@@ -1786,6 +1883,7 @@ function renderRecipeForm(id) {
     h('div', { class: 'content' },
       h('div', { class: 'row spread' }, h('a', { href: '#/recipes' }, '← All recipes'),
         h('div', { class: 'row' }, !isNew && isReadyRecipe(r) ? favToggle : null, url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Open original ↗') : null)),
+      !isNew && pendingBanner ? h('section', { class: 'card stack' }, pendingBanner) : null,
       !isNew && calTag(r) ? h('section', { class: 'card cal-card' }, h('div', { class: 'row' }, calTag(r), h('span', { class: 'small' }, 'per serving')),
         r.calories_basis ? h('p', { class: 'small muted' }, r.calories_basis) : null,
         r.calories_note ? h('p', { class: 'small muted' }, r.calories_note) : null) : null,
