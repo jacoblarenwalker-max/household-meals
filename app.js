@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live4';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live4';
-import { applyListLivePayload } from './list-live.js?v=live4';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live8';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live8';
+import { applyListLivePayload } from './list-live.js?v=live8';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -20,6 +20,61 @@ const S = {
   authMode: 'signin',
 };
 const appEl = document.getElementById('app');
+
+/* The shell is a fixed flex column sized to the visual viewport (see styles.css).
+   iOS pans that viewport when the keyboard opens or the Safari chrome moves;
+   tracking it keeps the tab bar on the visible bottom without position:fixed. */
+function bindVisualViewport() {
+  let queued = false;
+  let lastH = -1, lastT = -1, lastKb = null;
+  const apply = () => {
+    queued = false;
+    const vv = window.visualViewport;
+    const h = vv ? vv.height : window.innerHeight;
+    const t = vv ? vv.offsetTop : 0;
+    const gap = Math.max(0, window.innerHeight - t - h);
+    const kb = gap > 150; // keyboard, not the Safari toolbar
+    if (Math.abs(h - lastH) < 0.5 && Math.abs(t - lastT) < 0.5 && kb === lastKb) return;
+    lastH = h; lastT = t; lastKb = kb;
+    const root = document.documentElement;
+    root.style.setProperty('--vvh', h + 'px');
+    root.style.setProperty('--vvt', t + 'px');
+    if (kb) root.style.setProperty('--tab-safe', '0px');
+    else root.style.removeProperty('--tab-safe');
+  };
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(apply);
+  };
+  apply();
+  window.addEventListener('resize', schedule);
+  window.addEventListener('orientationchange', schedule);
+  window.addEventListener('pageshow', schedule);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', schedule);
+    window.visualViewport.addEventListener('scroll', schedule);
+  }
+  // Keep a focused field in the scrolling region, above the keyboard. Checkboxes stay put.
+  const reveal = (el) => {
+    const scroller = el.closest?.('.content, .auth');
+    if (!scroller) return;
+    const er = el.getBoundingClientRect();
+    const sr = scroller.getBoundingClientRect();
+    const pad = 16;
+    if (er.bottom > sr.bottom - pad) scroller.scrollTop += er.bottom - (sr.bottom - pad);
+    else if (er.top < sr.top + pad) scroller.scrollTop -= (sr.top + pad) - er.top;
+  };
+  document.addEventListener('focusin', (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLElement) || !/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+    if (el.type === 'checkbox' || el.type === 'radio') return;
+    const run = () => { apply(); reveal(el); };
+    setTimeout(run, 60);
+    setTimeout(run, 320);
+  });
+}
+bindVisualViewport();
 
 /* ---------------- helpers ---------------- */
 function h(tag, attrs, ...children) {
