@@ -71,7 +71,10 @@ backed by a Supabase project.
   of it). An item without a verified price shows a muted **Pricing…** tag (a `needs_price` request is waiting) or
   **Unpriced** where the price would be. The **Add an item** form guesses the aisle from the name (same chip as
   Staples). While Shopping (or Staples) is open, Supabase Realtime mirrors
-  `shopping_list_items` for that week so both phones see check-offs, adds and deletes right away.
+  `shopping_list_items` for that week so both phones see check-offs, adds and deletes on the open
+  screen (the live handler patches the in-memory list and re-draws; it does not wait for a tab
+  change). The Realtime socket gets the session JWT via `setAuth`, and if the channel drops the
+  app soft-resyncs without leaving Shopping.
 - **Aisles** (one list everywhere: Shopping, Staples, presets): Produce, Dairy & Eggs, Meat, Bakery & Bread, Pantry,
   Canned Goods, Frozen, Snacks, Drinks, Breakfast & Cereal, Condiments & Spices, Household & Cleaning, Paper Goods,
   Personal Care, Baby, Pet, Other. Older names still display in the right place (Dairy → Dairy & Eggs, Bakery →

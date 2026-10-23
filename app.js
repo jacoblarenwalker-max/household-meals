@@ -1,6 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live1';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live1';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live2';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live2';
+import { applyListLivePayload } from './list-live.js?v=live2';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -151,9 +152,12 @@ async function boot() {
   registerServiceWorker();
   const { data } = await sb.auth.getSession();
   S.session = data.session;
+  syncRealtimeAuth(S.session);
   sb.auth.onAuthStateChange((event, session) => {
     const prevUser = S.session?.user?.id;
     S.session = session;
+    // Realtime RLS needs the JWT on the socket; setAuth outside the heavy reload path
+    setTimeout(() => syncRealtimeAuth(session), 0);
     if (!booted) return;
     if (event === 'SIGNED_OUT' || (session?.user?.id || null) !== (prevUser || null)) {
       // defer: never call supabase from inside the auth callback
@@ -204,11 +208,12 @@ async function refreshRecipes() {
 
 /* ---------------- shell ---------------- */
 function render() {
-  if (!S.session) { stopListLive(); return renderAuth(); }
-  if (!S.member || !S.household) { stopListLive(); return renderUnlinked(); }
+  if (!S.session) { bindListLive({ view: null, weekId: null, weekStart: null, items: null, redraw: null }); stopListLive(); return renderAuth(); }
+  if (!S.member || !S.household) { bindListLive({ view: null, weekId: null, weekStart: null, items: null, redraw: null }); stopListLive(); return renderUnlinked(); }
   const { view, arg } = route();
   if (view === 'shop') return renderShop();
   if (view === 'staples') return renderStaples();
+  bindListLive({ view: null, weekId: null, weekStart: null, items: null, redraw: null });
   stopListLive(); // only Shopping / Staples keep the live list channel
   if (view === 'recipes') return arg ? renderRecipeForm(arg) : renderRecipes();
   if (view === 'settings') return renderSettings();
@@ -902,34 +907,145 @@ function checkNowCard(week) {
 /* ---------------- live list sync (Supabase Realtime) ---------------- */
 // While Shopping or Staples is open, mirror shopping_list_items for the selected week so
 // Jacob and Sophie see each other's check-offs, adds and deletes without refreshing.
+// Bindings live on `listLive` (not only closures) so a late Realtime event always patches the
+// array and DOM from the *currently mounted* Shopping/Staples screen — tab switches used to be
+// the only refresh because they re-ran renderShop()'s full fetch.
+const listLive = {
+  gen: 0,
+  view: null,       // 'shop' | 'staples' | null
+  weekId: null,
+  weekStart: null,  // S.weekStart when bound (shop guard)
+  items: null,      // mutable array currently on screen
+  redraw: null,     // () => patch DOM from items
+};
 let listLiveChannel = null;
 let listLiveWeekId = null;
-let listLiveHandler = null; // always the latest render's callback (avoids stale `items` after re-render)
+let listLiveStatus = null;
+let listLiveRetryTimer = null;
+let listLivePollTimer = null;
+
+// applyListLivePayload imported from list-live.js
+function syncRealtimeAuth(session) {
+  try {
+    if (session?.access_token) sb.realtime.setAuth(session.access_token);
+    else sb.realtime.setAuth(null); // clear
+  } catch (e) { console.warn('realtime auth', e); }
+}
+
 function stopListLive() {
+  if (listLiveRetryTimer) { clearTimeout(listLiveRetryTimer); listLiveRetryTimer = null; }
+  if (listLivePollTimer) { clearInterval(listLivePollTimer); listLivePollTimer = null; }
   if (listLiveChannel) {
     try { sb.removeChannel(listLiveChannel); } catch { /* ignore */ }
-    listLiveChannel = null; listLiveWeekId = null; listLiveHandler = null;
   }
+  listLiveChannel = null; listLiveWeekId = null; listLiveStatus = null;
 }
-function watchListWeek(weekId, onEvent) {
-  listLiveHandler = onEvent;
+
+function bindListLive({ view, weekId, weekStart, items, redraw }) {
+  listLive.view = view;
+  listLive.weekId = weekId || null;
+  listLive.weekStart = weekStart || null;
+  listLive.items = items || null;
+  listLive.redraw = typeof redraw === 'function' ? redraw : null;
+}
+
+function onListLiveEvent(payload) {
+  const items = listLive.items;
+  if (!items || !listLive.redraw) return;
+  if (listLive.view === 'shop') {
+    if (route().view !== 'shop' || listLive.weekStart !== S.weekStart) return;
+  } else if (listLive.view === 'staples') {
+    if (route().view !== 'staples') return;
+  } else return;
+  if (!applyListLivePayload(items, payload)) return;
+  try { listLive.redraw(); } catch (e) { console.warn('list live draw', e); }
+}
+
+function scheduleListLiveRetry(weekId) {
+  if (listLiveRetryTimer) clearTimeout(listLiveRetryTimer);
+  listLiveRetryTimer = setTimeout(() => {
+    listLiveRetryTimer = null;
+    if (listLiveChannel || !weekId) return;
+    if (listLive.view !== 'shop' && listLive.view !== 'staples') return;
+    if (listLive.weekId !== weekId) return;
+    watchListWeek(weekId);
+  }, 1200);
+}
+
+function startListLivePoll() {
+  if (listLivePollTimer) return;
+  // Fallback only while the Realtime channel isn't SUBSCRIBED: soft-resync without changing tabs.
+  listLivePollTimer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (listLiveStatus === 'SUBSCRIBED') {
+      clearInterval(listLivePollTimer); listLivePollTimer = null; return;
+    }
+    if (listLive.view === 'shop') softResyncShopList();
+    else if (listLive.view === 'staples' && listLive.weekId) softResyncShopList({ staplesOnly: true });
+  }, 2500);
+}
+function stopListLivePoll() {
+  if (listLivePollTimer) { clearInterval(listLivePollTimer); listLivePollTimer = null; }
+}
+
+async function softResyncShopList({ staplesOnly = false } = {}) {
+  const weekId = listLive.weekId;
+  const items = listLive.items;
+  if (!weekId || !items || !listLive.redraw) return;
+  const gen = listLive.gen;
+  const { data, error } = await sb.from('shopping_list_items').select('*').eq('week_id', weekId).order('position').order('name');
+  if (error || !data) return;
+  if (gen !== listLive.gen || listLive.weekId !== weekId || listLive.items !== items) return;
+  // Replace contents in place so closures that hold `items` stay valid
+  items.splice(0, items.length, ...data);
+  try { listLive.redraw(); } catch (e) { console.warn('list soft resync', e); }
+  if (!staplesOnly && route().view === 'shop') { /* redraw already refreshed shop */ }
+}
+
+function watchListWeek(weekId) {
   if (!weekId) { stopListLive(); return; }
-  if (listLiveChannel && listLiveWeekId === weekId) return; // keep channel; handler already swapped
+  syncRealtimeAuth(S.session);
+  // Keep a healthy channel; swap is unnecessary because onListLiveEvent reads listLive
+  if (listLiveChannel && listLiveWeekId === weekId && listLiveStatus === 'SUBSCRIBED') {
+    stopListLivePoll();
+    return;
+  }
+  const keepView = listLive.view;
+  const keepItems = listLive.items;
+  const keepRedraw = listLive.redraw;
+  const keepWs = listLive.weekStart;
   stopListLive();
-  listLiveHandler = onEvent;
+  // stopListLive cleared poll; restore bindings stopListLive does not touch listLive.* except we need poll restart
+  listLive.view = keepView; listLive.items = keepItems; listLive.redraw = keepRedraw;
+  listLive.weekId = weekId; listLive.weekStart = keepWs;
   listLiveWeekId = weekId;
-  const ch = sb.channel(`list:${weekId}`)
+  const ch = sb.channel(`list:${weekId}:${listLive.gen}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_list_items', filter: `week_id=eq.${weekId}` }, (payload) => {
-      try { listLiveHandler?.(payload); } catch (e) { console.warn('list live', e); }
+      try { onListLiveEvent(payload); } catch (e) { console.warn('list live', e); }
     })
     .subscribe((status) => {
-      // Clean reconnect: supabase-js resubscribes; if the channel is dead, drop our handle so the next render restarts it
+      if (listLiveChannel !== ch) return;
+      listLiveStatus = status;
+      if (status === 'SUBSCRIBED') { stopListLivePoll(); return; }
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        if (listLiveChannel === ch) { listLiveChannel = null; listLiveWeekId = null; }
+        listLiveChannel = null; listLiveWeekId = null; listLiveStatus = null;
+        try { sb.removeChannel(ch); } catch { /* ignore */ }
+        scheduleListLiveRetry(weekId);
       }
     });
   listLiveChannel = ch;
+  startListLivePoll();
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!S.session || (listLive.view !== 'shop' && listLive.view !== 'staples')) return;
+  syncRealtimeAuth(S.session);
+  if (listLive.weekId) {
+    if (!listLiveChannel || listLiveStatus !== 'SUBSCRIBED') watchListWeek(listLive.weekId);
+    softResyncShopList({ staplesOnly: listLive.view === 'staples' });
+  }
+});
 
 /* ---------------- shopping ---------------- */
 // one aisle list for Shopping, Staples and presets (store-walk order); old names like "Dairy" map onto it
@@ -966,6 +1082,7 @@ async function renderShop() {
   if (route().view !== 'shop' || ws !== S.weekStart) return;
   if (error) return content.replaceChildren(h('div', { class: 'msg error' }, friendlyError(error)));
   if (!week) {
+    bindListLive({ view: null, weekId: null, weekStart: null, items: null, redraw: null });
     stopListLive();
     return content.replaceChildren(h('div', { class: 'card stack center' }, h('h2', null, 'No list for this week'),
       h('p', { class: 'muted' }, 'A shopping list appears once the meal bot plans this week.')), checkNowCard(null));
@@ -1104,25 +1221,12 @@ async function renderShop() {
   hideBtn.addEventListener('click', () => { hideChecked = !hideChecked; sessionStorage.setItem('hideChecked', hideChecked ? '1' : '0'); hideBtn.textContent = hideChecked ? 'Show checked' : 'Hide checked'; draw(); });
 
   draw(); drawTotals();
-  watchListWeek(week.id, (payload) => {
-    if (route().view !== 'shop' || ws !== S.weekStart) return;
-    const ev = payload.eventType;
-    if (ev === 'INSERT') {
-      const row = payload.new; if (!row?.id) return;
-      if (items.some((i) => i.id === row.id)) return; // our own add already pushed it
-      items.push(row); draw(); drawTotals();
-    } else if (ev === 'UPDATE') {
-      const row = payload.new; if (!row?.id) return;
-      const i = items.findIndex((x) => x.id === row.id);
-      if (i < 0) items.push(row); else items[i] = { ...items[i], ...row };
-      draw(); drawTotals();
-    } else if (ev === 'DELETE') {
-      const id = payload.old?.id; if (!id) return;
-      const i = items.findIndex((x) => x.id === id);
-      if (i < 0) return;
-      items.splice(i, 1); draw(); drawTotals();
-    }
+  listLive.gen += 1;
+  bindListLive({
+    view: 'shop', weekId: week.id, weekStart: ws, items,
+    redraw: () => { if (route().view === 'shop' && ws === S.weekStart) { draw(); drawTotals(); } },
   });
+  watchListWeek(week.id);
   content.replaceChildren(
     h('div', { class: 'shop-head' }, budgetSlot, weekTotal),
     remind,
@@ -1734,27 +1838,17 @@ async function renderStaples() {
   draw();
   refreshBudget();
   // Keep On-list / Add chips in sync when the other phone checks or removes a staple row
+  listLive.gen += 1;
   if (week) {
-    watchListWeek(week.id, (payload) => {
-      if (!live()) return;
-      const ev = payload.eventType;
-      if (ev === 'INSERT') {
-        const row = payload.new; if (!row?.id) return;
-        if (items.some((i) => i.id === row.id)) return;
-        items.push(row); draw(); refreshBudget();
-      } else if (ev === 'UPDATE') {
-        const row = payload.new; if (!row?.id) return;
-        const i = items.findIndex((x) => x.id === row.id);
-        if (i < 0) items.push(row); else items[i] = { ...items[i], ...row };
-        draw(); refreshBudget();
-      } else if (ev === 'DELETE') {
-        const id = payload.old?.id; if (!id) return;
-        const i = items.findIndex((x) => x.id === id);
-        if (i < 0) return;
-        items.splice(i, 1); draw(); refreshBudget();
-      }
+    bindListLive({
+      view: 'staples', weekId: week.id, weekStart: ws, items,
+      redraw: () => { if (live()) { draw(); refreshBudget(); } },
     });
-  } else stopListLive();
+    watchListWeek(week.id);
+  } else {
+    bindListLive({ view: null, weekId: null, weekStart: null, items: null, redraw: null });
+    stopListLive();
+  }
   content.replaceChildren(
     budgetSlot,
     weeklyCard,
