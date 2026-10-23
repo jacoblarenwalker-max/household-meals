@@ -469,12 +469,13 @@ button.pchip.on .pt::before { content: "✓ "; color: var(--navy); }
 .money-input { display: flex; align-items: center; gap: 8px; }
 .money-input span { font-weight: 650; color: var(--muted); }
 
-/* dinner swap: small Swap action on each dinner, favorites-only picker */
+/* dinner swap: small Swap action on each dinner; Favorites / All recipes picker */
 .night .daycol { display: grid; gap: 6px; align-self: start; align-content: start; }
 button.ghost.swap { width: 100%; min-height: 34px; padding: 2px 0; font-size: .75rem; font-weight: 750; border-radius: 10px; color: var(--sky-deep); border-color: var(--line-strong); background: var(--surface); }
 button.ghost.swap:hover { background: var(--fill); color: var(--navy); }
 button.ghost.swap.on { background: var(--sky); color: var(--navy); border-color: var(--sky-edge); }
 .dpicker { grid-column: 1 / -1; margin-top: 2px; }
+.dpicker .seg { margin: 2px 0; }
 .dpicker .dcur { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .dpicker .dcur:empty { display: none; }
 .dpicker .dsearch input { min-height: 44px; padding: 9px 12px; }

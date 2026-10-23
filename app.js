@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=cal2';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=cal2';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=swap1';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=swap1';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -525,7 +525,7 @@ function nightsCard(ws, d) {
         const open = picking === s.id;
         const swap = h('button', {
           type: 'button', class: `ghost swap${open ? ' on' : ''}`, 'aria-expanded': open ? 'true' : 'false',
-          'aria-label': `Swap ${fmtD(s.date, { weekday: 'long' })}’s dinner for a favorite`,
+          'aria-label': `Swap ${fmtD(s.date, { weekday: 'long' })}’s dinner for another recipe`,
           onclick: () => { picking = open ? null : s.id; detail = null; draw(); if (!open) card.querySelector('.dpicker input, .dpicker button')?.focus(); },
         }, 'Swap');
         swaps.push(swap);
@@ -605,13 +605,18 @@ async function recipeUsage(ids) {
   return u;
 }
 
-// inline picker on a dinner slot: favorites only, most used first, one tap to swap
+// inline picker on a dinner slot: Favorites (default) or All recipes, most used first, one tap to swap
 function dinnerPicker(d, slot, current, close) {
   const dayName = fmtD(slot.date, { weekday: 'long' });
   const cur = current ? S.recipes.find((r) => r.id === current.id) || null : null;
+  let mode = 'favorites'; // 'favorites' | 'all'
+  const title = h('div', { class: 'mlabel' }, `Favorite dinners · ${dayName}`);
   const q = h('input', { type: 'search', placeholder: 'Search favorites', 'aria-label': 'Search favorite dinners', enterkeyhint: 'search' });
   const list = h('div', { class: 'dlist' });
   const curRow = h('div', { class: 'dcur' });
+  const favTab = h('button', { type: 'button', role: 'tab', class: 'on', 'aria-selected': 'true' }, 'Favorites');
+  const allTab = h('button', { type: 'button', role: 'tab', 'aria-selected': 'false' }, 'All recipes');
+  const tabs = h('div', { class: 'seg', role: 'tablist', 'aria-label': 'Which recipes to browse' }, favTab, allTab);
   let usage = {};
   const busy = (on) => wrap.querySelectorAll('button').forEach((b) => { b.disabled = on; });
   const pick = async (r) => {
@@ -633,34 +638,58 @@ function dinnerPicker(d, slot, current, close) {
         cur.is_favorite ? '★ Favorite' : '☆ Add to favorites'));
   };
   const usageText = (r) => { const u = usage[r.id]; return u ? `Made ${u.n} time${u.n === 1 ? '' : 's'}, last ${fmtD(u.last, { month: 'short', day: 'numeric' })}` : 'Not planned yet'; };
+  const pool = () => mode === 'favorites'
+    ? S.recipes.filter((r) => r.is_favorite && isReadyRecipe(r))
+    : S.recipes.filter(isReadyRecipe);
+  const setMode = (next) => {
+    if (mode === next) return;
+    mode = next;
+    const favOn = mode === 'favorites';
+    favTab.className = favOn ? 'on' : ''; favTab.setAttribute('aria-selected', favOn ? 'true' : 'false');
+    allTab.className = favOn ? '' : 'on'; allTab.setAttribute('aria-selected', favOn ? 'false' : 'true');
+    title.textContent = favOn ? `Favorite dinners · ${dayName}` : `All recipes · ${dayName}`;
+    q.placeholder = favOn ? 'Search favorites' : 'Search recipes';
+    q.setAttribute('aria-label', favOn ? 'Search favorite dinners' : 'Search all recipes');
+    wrap.setAttribute('aria-label', favOn ? `Pick a favorite dinner for ${dayName}` : `Pick a recipe for ${dayName}`);
+    drawList();
+  };
+  favTab.addEventListener('click', () => setMode('favorites'));
+  allTab.addEventListener('click', () => setMode('all'));
   const drawList = () => {
-    const favs = S.recipes.filter((r) => r.is_favorite && isReadyRecipe(r));
-    q.parentElement && (q.parentElement.hidden = favs.length < 2);
-    if (!favs.length) {
-      list.replaceChildren(h('div', { class: 'empty-presets' },
-        h('p', { class: 'small muted' }, `No favorites yet. Tap the ☆ star on a recipe in the Recipes tab${cur ? ' (or “Add to favorites” above)' : ''} and your go-to dinners show up here for one-tap swaps.`),
-        h('a', { class: 'btn small-btn', href: '#/recipes' }, 'Go to Recipes')));
+    const rs0 = pool();
+    q.parentElement && (q.parentElement.hidden = rs0.length < 2);
+    if (!rs0.length) {
+      if (mode === 'favorites') {
+        list.replaceChildren(h('div', { class: 'empty-presets' },
+          h('p', { class: 'small muted' }, `No favorites yet. Tap All recipes above to browse every dinner, or star one in the Recipes tab${cur ? ' (or “Add to favorites” above)' : ''}.`),
+          h('button', { type: 'button', class: 'btn small-btn', onclick: () => setMode('all') }, 'Browse all recipes')));
+      } else {
+        list.replaceChildren(h('div', { class: 'empty-presets' },
+          h('p', { class: 'small muted' }, 'No recipes yet. Add one on the Recipes tab, then come back to swap.'),
+          h('a', { class: 'btn small-btn', href: '#/recipes' }, 'Go to Recipes')));
+      }
       return;
     }
     const term = q.value.trim().toLowerCase();
-    const rs = favs.filter((r) => !term || [r.title, ...(r.tags || [])].join(' ').toLowerCase().includes(term))
+    const rs = rs0.filter((r) => !term || [r.title, ...(r.tags || [])].join(' ').toLowerCase().includes(term))
       .sort((a, b) => (usage[b.id]?.n || 0) - (usage[a.id]?.n || 0) || (usage[b.id]?.last || '').localeCompare(usage[a.id]?.last || '') || a.title.localeCompare(b.title));
     list.replaceChildren(...(rs.length ? rs.map((r) => {
       const on = cur?.id === r.id && !slot.is_leftover_night;
       return h('button', { type: 'button', class: `pchip drow${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false', onclick: () => pick(r) },
-        h('span', { class: 'pt' }, r.title), h('span', { class: 'pm' }, usageText(r)));
-    }) : [h('p', { class: 'small muted' }, 'No favorites match.')]));
+        h('span', { class: 'pt' }, r.title), h('span', { class: 'pm' }, usageText(r), mode === 'all' && r.is_favorite ? ' · ★' : ''));
+    }) : [h('p', { class: 'small muted' }, mode === 'favorites' ? 'No favorites match.' : 'No recipes match.')]));
   };
   q.addEventListener('input', drawList);
   const wrap = h('div', { class: 'picker dinner dpicker', role: 'group', 'aria-label': `Pick a favorite dinner for ${dayName}` },
-    h('div', { class: 'row spread' }, h('div', { class: 'mlabel' }, `Favorite dinners · ${dayName}`), h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close picker' }, '✕')),
+    h('div', { class: 'row spread' }, title, h('button', { type: 'button', class: 'ghost', onclick: close, 'aria-label': 'Close picker' }, '✕')),
     curRow,
+    tabs,
     h('div', { class: 'dsearch' }, q),
     list,
     d.week.status === 'locked' ? h('p', { class: 'small muted' }, 'This week is locked. A swap reopens voting.') : d.week.status !== 'draft' ? h('p', { class: 'small muted' }, 'A swap resets approvals, so everyone approves the new plan.') : null);
   wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   drawCur(); drawList();
-  recipeUsage(S.recipes.filter((r) => r.is_favorite).map((r) => r.id)).then((u) => { usage = u; if (wrap.isConnected) drawList(); });
+  recipeUsage(S.recipes.filter(isReadyRecipe).map((r) => r.id)).then((u) => { usage = u; if (wrap.isConnected) drawList(); });
   return wrap;
 }
 
@@ -1764,10 +1793,12 @@ function renderRecipeForm(id) {
       !isNew ? h('section', { class: 'card stack delete-recipe' },
         h('p', { class: 'small muted' }, r.photo_path ? 'Deletes this recipe and its saved photo for good.' : 'Deletes this recipe for good.'),
         h('button', { type: 'button', class: 'danger-btn block', onclick: async (e) => {
+          // capture the button now: after await, e.currentTarget is null, so a failed delete used to leave it grey with no toast
+          const btn = e.currentTarget;
           if (!confirm(`Delete “${r.title}”${r.photo_path ? ' and its photo' : ''}? This can’t be undone.`)) return;
-          e.currentTarget.disabled = true;
+          btn.disabled = true;
           try { await deleteRecipe(r); toast(`Deleted “${r.title}”.`); location.hash = '#/recipes'; }
-          catch (err) { e.currentTarget.disabled = false; toast(friendlyError(err), true); }
+          catch (err) { btn.disabled = false; toast(friendlyError(err), true); }
         } }, 'Delete recipe')) : null),
     tabbar('recipes'));
 }

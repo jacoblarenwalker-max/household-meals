@@ -35,8 +35,9 @@ backed by a Supabase project.
   voter's vote and comment, and who still needs to vote. You can **Approve** or mark **Needs work** with a comment.
   Voting is disabled once the week is locked. The database decides when a week locks (every voter approves in
   `multi` mode).
-  - **Swap** (under each dinner's date): opens a searchable list of the household's **favorite** dinners
-    (`recipes.is_favorite`), most often / most recently planned first, and one tap puts that recipe in the slot.
+  - **Swap** (under each dinner's date): opens a searchable picker with **Favorites** (default: `recipes.is_favorite`)
+    and **All recipes** tabs. Both lists sort most often / most recently planned first; one tap puts that recipe in
+    the slot. Pending photo recipes stay hidden until they're ready.
     Swapping is a member edit of `week_slots`, so a database trigger (`week_slots_after_user_change`) reopens the
     vote: a locked week goes back to voting (the app asks to confirm first), every approve vote for that week is
     cleared (needs-work comments stay), and the week locks again only when every voter approves (multi mode). The
@@ -265,7 +266,7 @@ dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 Updates: `index.html` loads `app.js?v=…` and `styles.css?v=…` (and `app.js` imports `config.js?v=…` /
-`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `cal2`). `sw.js` activates
+`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `swap1`). `sw.js` activates
 immediately (skipWaiting + clients.claim), fetches the page/JS/CSS network-first past the HTTP cache (no offline
 copies), and the app reloads once on `controllerchange`, so the iPhone Home Screen app updates on its next open.
 
