@@ -1046,6 +1046,76 @@ function aislePicker(nameInput, { initial = null } = {}) {
 }
 let hideChecked = sessionStorage.getItem('hideChecked') === '1';
 
+// Shopping "weekly staples aren't on the list" reminder. Dismiss is remembered for the
+// week the picker is showing (its Monday, S.weekStart — that week's week_id) so a reload
+// or another tab doesn't bring it back. Another week keeps its own reminder. Once nothing
+// is missing, the dismiss is dropped, so a staple that leaves the list later can remind again.
+const STAPLE_REMIND_DISMISS_KEY = 'stapleRemindDismissed';
+const stapleRemindMemory = new Set();
+function stapleRemindMap() {
+  try {
+    const raw = localStorage.getItem(STAPLE_REMIND_DISMISS_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+  } catch { return {}; }
+}
+function stapleRemindDismissed(weekKey) {
+  return stapleRemindMemory.has(weekKey) || stapleRemindMap()[weekKey] === 1;
+}
+function dismissStapleRemind(weekKey) {
+  stapleRemindMemory.add(weekKey);
+  try {
+    const map = stapleRemindMap();
+    map[weekKey] = 1;
+    const keys = Object.keys(map).sort();
+    while (keys.length > 20) delete map[keys.shift()];
+    localStorage.setItem(STAPLE_REMIND_DISMISS_KEY, JSON.stringify(map));
+  } catch { /* private mode: the in-memory set still hides it until the app is closed */ }
+}
+function clearStapleRemindDismiss(weekKey) {
+  stapleRemindMemory.delete(weekKey);
+  try {
+    const map = stapleRemindMap();
+    if (map[weekKey] !== 1) return;
+    delete map[weekKey];
+    localStorage.setItem(STAPLE_REMIND_DISMISS_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+// Fills the reminder slot. onAdd is "Add them" (same staple add as the Staples tab).
+function renderWeeklyRemind(remind, { weekly, items, weekKey, onAdd }) {
+  const list = weekly || [];
+  const missing = list.filter((s) => !stapleOnList(items, s));
+  if (!missing.length) {
+    clearStapleRemindDismiss(weekKey);
+    if (!list.length) { remind.replaceChildren(); return; }
+    remind.replaceChildren(h('p', { class: 'small weekly-done', id: 'weekly-remind' },
+      h('span', { class: 'tick', 'aria-hidden': 'true' }, '✓'), ' Weekly staples added', h('span', { class: 'grow' }),
+      h('a', { href: '#/staples' }, 'See all staples')));
+    return;
+  }
+  if (stapleRemindDismissed(weekKey)) { remind.replaceChildren(); return; }
+  const n = missing.length;
+  const btn = h('button', { type: 'button', class: 'weekly-btn add-them' }, 'Add them');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    await onAdd(missing);
+  });
+  const close = h('button', {
+    type: 'button', class: 'ghost remind-close', title: 'Hide for this week',
+    'aria-label': 'Dismiss weekly staples reminder for this week',
+  }, '✕');
+  close.addEventListener('click', () => {
+    dismissStapleRemind(weekKey);
+    remind.replaceChildren();
+  });
+  remind.replaceChildren(h('section', { class: 'card weekly-remind', id: 'weekly-remind', role: 'region', 'aria-label': 'Weekly staples reminder' },
+    h('div', { class: 'remind-text' },
+      h('strong', null, `${n} weekly staple${n === 1 ? ' isn’t' : 's aren’t'} on the list: `),
+      h('span', null, missing.map((s) => s.name).join(', '))),
+    close,
+    h('div', { class: 'remind-actions' }, btn, h('a', { class: 'small', href: '#/staples' }, 'See all staples'))));
+}
+
 async function renderShop() {
   const content = h('div', { class: 'content' }, h('div', { class: 'card muted center' }, 'Loading shopping list…'));
   mount(topbar('Shopping', weekPicker(renderShop, { shopHint: true })), content, tabbar('shop'));
@@ -1085,31 +1155,17 @@ async function renderShop() {
       h('span', { class: 'muted' }, unpriced ? ` · ${unpriced} of ${items.length} unpriced` : items.length ? ' · every item priced' : ''));
     budgetSummary(ws).then((sum) => { if (sum && route().view === 'shop' && ws === S.weekStart) budgetSlot.replaceChildren(budgetBar(sum)); });
   };
-  // reminder: weekly staples that aren't on this week's list yet (same add logic as the Staples tab)
+  // reminder: weekly staples that aren't on this week's list yet (same add logic as the Staples tab).
+  // weekKey is the Monday the Shopping picker is showing — the viewed week's week_id.
   const remind = h('div', { class: 'remind-slot' });
   const weekly = weeklyStaples || [];
-  const drawRemind = () => {
-    if (!weekly.length) return remind.replaceChildren();
-    const missing = weekly.filter((s) => !stapleOnList(items, s));
-    if (!missing.length) {
-      return remind.replaceChildren(h('p', { class: 'small weekly-done', id: 'weekly-remind' },
-        h('span', { class: 'tick', 'aria-hidden': 'true' }, '✓'), ' Weekly staples added', h('span', { class: 'grow' }),
-        h('a', { href: '#/staples' }, 'See all staples')));
-    }
-    const n = missing.length;
-    const btn = h('button', { type: 'button', class: 'weekly-btn add-them' }, 'Add them');
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      await addStaplesToList(week.id, missing, items, { weekly: true, onChange: () => {
-        if (route().view === 'shop' && ws === S.weekStart) { draw(); drawTotals(); }
-      } });
-    });
-    remind.replaceChildren(h('section', { class: 'card weekly-remind', id: 'weekly-remind', role: 'region', 'aria-label': 'Weekly staples reminder' },
-      h('div', { class: 'remind-text' },
-        h('strong', null, `${n} weekly staple${n === 1 ? ' isn’t' : 's aren’t'} on the list: `),
-        h('span', null, missing.map((s) => s.name).join(', '))),
-      h('div', { class: 'remind-actions' }, btn, h('a', { class: 'small', href: '#/staples' }, 'See all staples'))));
-  };
+  const weekKey = ws;
+  const drawRemind = () => renderWeeklyRemind(remind, {
+    weekly, items, weekKey,
+    onAdd: (missing) => addStaplesToList(week.id, missing, items, { weekly: true, onChange: () => {
+      if (route().view === 'shop' && ws === S.weekStart) { draw(); drawTotals(); }
+    } }),
+  });
   const draw = () => {
     drawRemind();
     const done = items.filter((i) => i.checked).length;
