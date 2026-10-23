@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live9';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live9';
-import { applyListLivePayload } from './list-live.js?v=live9';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live10';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live10';
+import { applyListLivePayload } from './list-live.js?v=live10';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -169,7 +169,17 @@ const STATUS = {
   needs_work: { label: 'Needs work', text: 'Someone asked for changes. The meal bot will revise the plan.' },
   locked: { label: 'Locked', text: 'Everyone approved. This plan is set.' },
 };
-const statusChip = (st) => h('span', { class: `chip ${st}` }, STATUS[st]?.label || st);
+// One compact chip. The longer sentence stays on the chip for assistive tech; it is not drawn again over dinners.
+const statusChip = (st, detail) => {
+  const info = STATUS[st] || { label: st || 'Unknown', text: '' };
+  const label = info.label || st || 'Unknown';
+  const text = [info.text, detail].filter(Boolean).join(' ');
+  return h('span', {
+    class: `chip ${st || ''}`.trim(),
+    title: text || null,
+    'aria-label': text ? `${label}. ${text}` : label,
+  }, label);
+};
 
 /* ---------------- routing ---------------- */
 function route() {
@@ -331,17 +341,15 @@ function weekPicker(onChange, { shopHint = false } = {}) {
   for (const wk of S.weeks) choices.add(wk.week_start);
   for (let i = -3; i <= 3; i++) choices.add(addDays(shop, i * 7));
   const opts = [...choices].sort().map((d) => {
-    const known = S.weeks.find((x) => x.week_start === d);
     const tag = d === shop ? ' · shop week' : '';
-    const st = known ? ` · ${STATUS[known.status]?.label || known.status}` : '';
-    return h('option', { value: d, selected: d === ws || null }, `${weekLabel(d)}${tag}${st}`);
+    return h('option', { value: d, selected: d === ws || null }, `${weekLabel(d)}${tag}`);
   });
   const sel = h('select', { class: 'week-jump', 'aria-label': 'Choose shopping week', onchange: (e) => go(e.target.value) }, opts);
   return h('div', { class: 'weekpick' },
     h('button', { class: 'icon', 'aria-label': 'Previous week', onclick: () => go(addDays(ws, -7)) }, '‹'),
     h('div', { class: 'label' },
       h('div', { class: 'week-title' }, `Week of ${weekLabel(ws)}`),
-      h('span', { class: 'small muted' }, w ? statusChip(w.status) : 'No plan yet', ' ',
+      h('span', { class: 'small muted' }, w ? statusChip(w.status, w.status === 'locked' && w.locked_at ? `Set ${fmtTs(w.locked_at)}` : null) : 'No plan yet', ' ',
         ws !== shop ? h('button', { class: 'ghost', onclick: () => go(shop) }, 'Jump to shop week') : h('span', { class: 'chip shop-week' }, 'Shop week'),
         shopHint && ws === shop ? h('span', { class: 'muted' }, ' · Monday shop') : null),
       sel),
@@ -441,11 +449,8 @@ async function renderWeek() {
       h('h2', null, 'No plan for this week yet'),
       h('p', { class: 'muted' }, 'The meal bot hasn’t drafted dinners for this week. Tap “Check now” to ask it to sync, or start planning breakfast and lunch below.')));
   } else {
-    const st = d.week.status;
-    parts.push(h('div', { class: `status-banner ${st}` },
-      h('strong', null, STATUS[st]?.label || st),
-      h('div', { class: 'small' }, STATUS[st]?.text || ''),
-      st === 'locked' && d.week.locked_at ? h('div', { class: 'small muted' }, `Locked ${fmtTs(d.week.locked_at)}`) : null));
+    // Status lives on the week-picker chip only. A banner here was collapsing
+    // onto this card and painting "Locked" across the Dinners header.
     parts.push(nightsCard(ws, d));
     parts.push(votesCard(d));
   }

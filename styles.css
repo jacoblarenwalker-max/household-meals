@@ -117,7 +117,11 @@ strong { font-weight: 650; }
   overscroll-behavior: contain;
   padding: 16px 16px 32px;
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px;
+  align-content: start;
 }
+/* Don't let a section shrink onto the next one. overflow:hidden used to zero
+   the status row's minimum size, so Safari painted Dinners over "Locked". */
+.content > * { align-self: start; min-height: min-content; }
 
 /* nav: in the shell, under the scroller — not position:fixed (that drifts mid-list on iOS) */
 .tabbar {
@@ -154,6 +158,8 @@ strong { font-weight: 650; }
 
 /* cards: white on near-white, with a solid baby blue header band */
 .card { background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 20px; }
+/* Keep the blue Dinners band inside its card so a negative margin can't cover the rows above it. */
+#dinners { overflow: clip; }
 .card.flat { background: transparent; border: 0; }
 .card-head { display: grid; gap: 6px; margin-bottom: 8px; }
 .card-head p { line-height: 1.45; }
@@ -366,6 +372,7 @@ button.mealline.empty:hover { background: var(--fill); border-color: var(--tan-d
   --sb: var(--tan-dark);
   background: var(--surface); border: 1px solid var(--line-strong);
   border-radius: var(--radius); padding: 16px 20px 16px 26px; display: grid; gap: 4px; position: relative; overflow: hidden;
+  min-height: min-content; align-self: start;
 }
 .status-banner::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 8px; background: var(--sb); }
 .status-banner.voting { --sb: var(--sky); }
