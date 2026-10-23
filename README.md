@@ -101,8 +101,12 @@ backed by a Supabase project.
     `dinner` rows are).
   - On **Shopping**, a beige reminder card near the top lists weekly staples that aren't on the selected week's list
     yet ("2 weekly staples aren't on the list: Milk, Eggs- 16 count") with **Add them** (same logic as Add weekly
-    staples: no duplicates, toast with Undo, budget and week total update) and a **See all staples** link. Once
-    they're all on the list it shrinks to a small "✓ Weekly staples added" line; with no weekly staples it's hidden.
+    staples: no duplicates, toast with Undo, budget and week total update), a **See all staples** link, and an **✕**
+    that dismisses it for the week the Shopping picker is showing (that Monday / `week_id`). Dismiss is remembered
+    on this phone, so leaving Shopping or reopening the app doesn't bring it back; a different week that still has
+    missing weekly staples shows its own reminder. Once every weekly staple is on the list, that dismiss is forgotten
+    (a staple taken back off can remind again). With all of them on the list the card shrinks to a small
+    "✓ Weekly staples added" line; with no weekly staples it's hidden.
 - **Recipes**: search, add and edit household recipes, including a **Short description** (`recipes.description`, one
   plain line under ~60 characters, max 120) that This week shows under the dinner name. Tap the ☆ star on a recipe (or **Add to favorites** on its
   page or in the Swap picker) to make it a go-to dinner. Every card has a solid baby-blue **Open recipe ↗** button
