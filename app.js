@@ -1185,8 +1185,8 @@ async function renderShop() {
   const qty = h('input', { type: 'number', min: 0, step: 'any', inputmode: 'decimal', placeholder: 'Qty' });
   const unit = h('input', { placeholder: 'Unit (lb, can…)', maxlength: 40 });
   const aisle = aislePicker(name);
-  const addBtn = h('button', { type: 'submit', class: 'block' }, 'Add to list');
-  const addForm = h('form', { class: 'card stack', onsubmit: async (e) => {
+  const addBtn = h('button', { type: 'submit', class: 'small' }, 'Add');
+  const addForm = h('form', { class: 'card stack add-compact', hidden: true, onsubmit: async (e) => {
     e.preventDefault();
     if (!name.value.trim()) return;
     addBtn.disabled = true;
@@ -1202,8 +1202,10 @@ async function renderShop() {
     withShopScroll(() => { draw(); drawTotals(); });
     toast(hasPrice(data) ? 'Added.' : 'Added. The meal bot will look up its Walmart price.');
   } },
-  h('h2', null, 'Add item'), h('label', null, 'Item', name), aisle.el, h('div', { class: 'grid2' }, qty, unit), addBtn,
-  h('p', { class: 'small muted' }, 'Snacks and basics: Staples tab.'));
+  h('div', { class: 'add-row' }, name, addBtn), aisle.el, h('div', { class: 'grid2' }, qty, unit),
+  h('div', { class: 'row spread' }, h('span', { class: 'small muted' }, 'Snacks and basics: Staples tab.'),
+    h('button', { type: 'button', class: 'ghost small', onclick: () => { addForm.hidden = true; addToggle.hidden = false; } }, 'Done')));
+  const addToggle = h('button', { type: 'button', class: 'add-toggle', onclick: () => { addForm.hidden = false; addToggle.hidden = true; name.focus(); } }, '+ Add item');
 
   const hideBtn = h('button', { class: 'ghost' }, hideChecked ? 'Show checked' : 'Hide checked');
   hideBtn.addEventListener('click', () => { hideChecked = !hideChecked; sessionStorage.setItem('hideChecked', hideChecked ? '1' : '0'); hideBtn.textContent = hideChecked ? 'Show checked' : 'Hide checked'; draw(); });
@@ -1218,7 +1220,7 @@ async function renderShop() {
   stopListLive(); // no Realtime while Shopping is open (anti-glitch)
   content.replaceChildren(
     h('div', { class: 'shop-head' }, budgetSlot, weekTotal),
-    addForm,
+    addToggle, addForm,
     remind,
     h('div', { class: 'row spread' }, h('div', null, h('strong', null, store), ' ', counter), hideBtn),
     listWrap, checkNowCard(week),

@@ -617,3 +617,11 @@ details.more-fields[open] > summary { margin-bottom: 8px; }
 .preset-group-mini .preset-row { padding: 10px 0; }
 .preset-group-mini h3 + .preset-row { border-top: 0; }
 .recipe-add .btn, .preset-add .btn { padding: 10px 8px; white-space: nowrap; font-size: .9375rem; gap: 6px; }
+
+.add-toggle{display:inline-block;width:auto;padding:6px 14px;font-size:14px;border-radius:999px;margin:4px 0 8px}
+.add-compact{padding:10px 12px;gap:6px}
+.add-compact input,.add-compact select{padding:7px 10px;font-size:16px}
+.add-row{display:flex;gap:6px}.add-row input{flex:1;min-width:0}
+.add-row button{width:auto;padding:7px 14px}
+.add-compact button.small{font-size:14px}
+[hidden]{display:none!important}
