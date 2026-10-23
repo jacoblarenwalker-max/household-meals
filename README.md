@@ -61,12 +61,16 @@ backed by a Supabase project.
   - If a week has no plan yet, **Start planning this week** creates a draft week so breakfasts/lunches can be added.
   - A slim **monthly budget bar** shows priced list totals for weeks starting in that month against the budget.
 - **Shopping**: the selected week's list grouped by aisle (the aisle list below, in store order), with dinner, breakfast/lunch and staple items
-  together and a small source label. Check items off, add or remove items. Prices only show when the row has both
-  `price_cents` and `price_source`; the product line links to `walmart_product_url` when set. Shows the week's total
-  and the monthly budget bar. Names are short (`Sour cream`); any detail lives in `shopping_list_items.note` and shows
-  as one small muted line under the name (tap it to see all of it). An item without a verified price shows a muted
-  **Pricing…** tag (a `needs_price` request is waiting) or **Unpriced** where the price would be. The **Add an item**
-  form guesses the aisle from the name (same chip as Staples).
+  together and a small source label. The top week chrome (‹ ›, a week dropdown, and **Jump to shop week**) picks which
+  week's list you're looking at — same shared `S.weekStart` as This week and Staples, so "Add to list" on Staples
+  targets that week too. **Default / shop week** is the Monday they're about to shop for (they shop Mondays): on
+  Monday itself it's that day's week; Tue–Sun it advances to the upcoming Monday. Check items off, add or remove
+  items. Prices only show when the row has both `price_cents` and `price_source`; the product line links to
+  `walmart_product_url` when set. Shows the week's total and the monthly budget bar. Names are short (`Sour cream`);
+  any detail lives in `shopping_list_items.note` and shows as one small muted line under the name (tap it to see all
+  of it). An item without a verified price shows a muted **Pricing…** tag (a `needs_price` request is waiting) or
+  **Unpriced** where the price would be. The **Add an item** form guesses the aisle from the name (same chip as
+  Staples).
 - **Aisles** (one list everywhere: Shopping, Staples, presets): Produce, Dairy & Eggs, Meat, Bakery & Bread, Pantry,
   Canned Goods, Frozen, Snacks, Drinks, Breakfast & Cereal, Condiments & Spices, Household & Cleaning, Paper Goods,
   Personal Care, Baby, Pet, Other. Older names still display in the right place (Dairy → Dairy & Eggs, Bakery →
@@ -173,8 +177,11 @@ browser can't fetch Walmart prices, so when someone adds an item with no verifie
 staple, a breakfast/lunch line, a preset ingredient, or a preset-generated list row) the app inserts an `app_events`
 row with `event_type = 'needs_price'` and `payload.items = [{"table": "shopping_list_items" | "staples" |
 "meal_presets", "id": …, "index": <ingredient index, presets only>, "name": …}]` (plus `week_start`,
-`requested_by`, `source: 'web_app'`). It never sends a push notification. The wake routine should handle it like
-`check_now`: price each item, then set `processed_at`. "Pricing…" shows while the event is unprocessed (last 14 days).
+`requested_by`, `source: 'web_app'`). It never sends a push notification. The wake routine must handle it **right
+away** (same as `check_now` / dinner swaps): price each item, then set `processed_at` — do not leave it for Sunday.
+"Pricing…" shows while the event is unprocessed (last 14 days); the open Shopping/Staples tab also soft-refreshes
+for about two minutes after an add so a filled price appears without a full reopen. The Sunday morning Walmart pass
+is only a backstop for anything still in `unpriced_items`.
 
 To price an item: search walmart.com with **no store selected**, pick the cheapest matching product by unit price at a
 sensible size for 2 people, and set `price_cents`, `walmart_product_url` (`https://www.walmart.com/ip/…`),
@@ -339,7 +346,7 @@ dividers; calorie tags are white with a `#D8D3CA` border and navy text; ink `#1C
 budget. Icon: white J+S with a beige plus and a flat navy shadow, the J wearing a white chef hat, on solid baby blue.
 
 Updates: `index.html` loads `app.js?v=…` and `styles.css?v=…` (and `app.js` imports `config.js?v=…` /
-`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `combo2`). `sw.js` activates
+`categorize.js?v=…`); bump that tag and `SW_VERSION` in `sw.js` on each release (currently `shopweek1`). `sw.js` activates
 immediately (skipWaiting + clients.claim), fetches the page/JS/CSS network-first past the HTTP cache (no offline
 copies), and the app reloads once on `controllerchange`, so the iPhone Home Screen app updates on its next open.
 

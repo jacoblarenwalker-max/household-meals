@@ -245,6 +245,18 @@ textarea { min-height: 96px; resize: vertical; }
 .weekpick .label .small { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-weight: 600; font-size: .875rem; margin-top: 6px; }
 .weekpick .label button.ghost { min-height: 32px; padding: 4px 10px; font-size: .8125rem; border-radius: 999px; background: var(--surface); color: var(--navy); border-color: var(--navy); }
 .weekpick .label button.ghost:hover { background: var(--beige); }
+.weekpick .week-title { line-height: 1.2; }
+.weekpick .week-jump {
+  display: block; width: 100%; max-width: 22rem; margin: 8px auto 0;
+  appearance: none; -webkit-appearance: none;
+  font: inherit; font-size: .8125rem; font-weight: 650; color: var(--navy);
+  background: var(--surface); border: 1.5px solid var(--border); border-radius: 999px;
+  padding: 6px 28px 6px 12px; text-align: center; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%230F2747' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+}
+.weekpick .week-jump:focus { outline: 2px solid var(--blue); outline-offset: 2px; }
+.chip.shop-week { background: var(--beige); color: var(--navy); border: 1px solid var(--tan); }
 
 /* nights + meal days */
 .night { display: grid; grid-template-columns: 54px 1fr; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); }

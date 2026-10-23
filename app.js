@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=combo2';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=combo2';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=shopweek1';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=shopweek1';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -91,13 +91,12 @@ function weekLabel(ws) {
   return `${fmtD(ws, { month: 'short', day: 'numeric' })} – ${fmtD(we, { month: 'short', day: 'numeric' })}`;
 }
 function defaultWeekStart() {
+  // They shop Mondays: Mon → this week's list; Tue–Sun → the upcoming Monday's week (next shop).
   const today = todayISO();
   const cur = mondayOf(today);
   const next = addDays(cur, 7);
-  const has = (ws) => S.weeks.some((w) => w.week_start === ws);
   const dow = (parseD(today).getUTCDay() + 6) % 7; // 0 = Monday
-  if (has(next) && (!has(cur) || dow >= 5)) return next; // weekends look ahead to the next plan
-  return cur;
+  return dow === 0 ? cur : next;
 }
 
 const STATUS = {
@@ -246,16 +245,30 @@ function topbar(title, extra) {
     h('div', { class: 'row' }, h('div', { class: 'grow' }, h('h1', null, title), h('div', { class: 'sub' }, S.household?.name || ''))),
     extra || null);
 }
-function weekPicker(onChange) {
+function weekPicker(onChange, { shopHint = false } = {}) {
   const ws = S.weekStart;
   const w = S.weeks.find((x) => x.week_start === ws);
-  const cur = defaultWeekStart();
+  const shop = defaultWeekStart(); // upcoming Monday shop week
   const go = (d) => { S.weekStart = d; sessionStorage.setItem('weekStart', d); onChange(); };
+  // quick-jump: known plans around the shop week (past 3 + next 3 Mondays), plus the selected week
+  const choices = new Set([ws, shop]);
+  for (const wk of S.weeks) choices.add(wk.week_start);
+  for (let i = -3; i <= 3; i++) choices.add(addDays(shop, i * 7));
+  const opts = [...choices].sort().map((d) => {
+    const known = S.weeks.find((x) => x.week_start === d);
+    const tag = d === shop ? ' · shop week' : '';
+    const st = known ? ` · ${STATUS[known.status]?.label || known.status}` : '';
+    return h('option', { value: d, selected: d === ws || null }, `${weekLabel(d)}${tag}${st}`);
+  });
+  const sel = h('select', { class: 'week-jump', 'aria-label': 'Choose shopping week', onchange: (e) => go(e.target.value) }, opts);
   return h('div', { class: 'weekpick' },
     h('button', { class: 'icon', 'aria-label': 'Previous week', onclick: () => go(addDays(ws, -7)) }, '‹'),
-    h('div', { class: 'label' }, `Week of ${weekLabel(ws)}`,
+    h('div', { class: 'label' },
+      h('div', { class: 'week-title' }, `Week of ${weekLabel(ws)}`),
       h('span', { class: 'small muted' }, w ? statusChip(w.status) : 'No plan yet', ' ',
-        ws !== cur ? h('button', { class: 'ghost', onclick: () => go(cur) }, 'Jump to current') : null)),
+        ws !== shop ? h('button', { class: 'ghost', onclick: () => go(shop) }, 'Jump to shop week') : h('span', { class: 'chip shop-week' }, 'Shop week'),
+        shopHint && ws === shop ? h('span', { class: 'muted' }, ' · Monday shop') : null),
+      sel),
     h('button', { class: 'icon', 'aria-label': 'Next week', onclick: () => go(addDays(ws, 7)) }, '›'));
 }
 
@@ -913,7 +926,7 @@ let hideChecked = sessionStorage.getItem('hideChecked') === '1';
 
 async function renderShop() {
   const content = h('div', { class: 'content' }, h('div', { class: 'card muted center' }, 'Loading shopping list…'));
-  mount(topbar('Shopping', weekPicker(renderShop)), content, tabbar('shop'));
+  mount(topbar('Shopping', weekPicker(renderShop, { shopHint: true })), content, tabbar('shop'));
   const ws = S.weekStart;
   const { data: week, error } = await sb.from('weeks').select('id, status').eq('household_id', S.household.id).eq('week_start', ws).maybeSingle();
   if (route().view !== 'shop' || ws !== S.weekStart) return;
@@ -1087,6 +1100,22 @@ async function requestPrices(refs, weekId = null) {
       wanted: 'lowest-cost matching walmart.com product, no store selected (usually Great Value), sensible size for 2 people' },
   });
   if (error) for (const r of items) pendingPrice.delete(priceKey(r.table, r.id, r.index)); // shows as "Unpriced" instead
+  else watchPendingPrices(); // refresh the open tab once the meal bot fills prices
+}
+// After a needs_price insert, briefly re-check so "Pricing…" flips to a dollar amount when the bot finishes
+// (the Wake on app_events webhook should process it right away; this only refreshes the UI).
+let priceWatchTimer = null;
+function watchPendingPrices() {
+  if (priceWatchTimer) return;
+  let n = 0;
+  priceWatchTimer = setInterval(async () => {
+    n++;
+    if (n > 15 || !pendingPrice.size) { clearInterval(priceWatchTimer); priceWatchTimer = null; return; }
+    const view = route().view;
+    if (view === 'shop') renderShop();
+    else if (view === 'staples') renderStaples();
+    else if (view === 'week') renderWeek();
+  }, 8000);
 }
 const rowPriceRefs = (rows) => rows.filter((r) => r && !hasPrice(r)).map((r) => ({ table: 'shopping_list_items', id: r.id, name: r.name }));
 // muted stand-in for a price: "Pricing…" once a needs_price request is waiting, otherwise "Unpriced"
@@ -1459,7 +1488,7 @@ function budgetBar(sum) {
 
 async function renderStaples() {
   const content = h('div', { class: 'content' }, h('div', { class: 'card muted center' }, 'Loading staples…'));
-  mount(topbar('Staples', weekPicker(renderStaples)), content, tabbar('staples'));
+  mount(topbar('Staples', weekPicker(renderStaples, { shopHint: true })), content, tabbar('staples'));
   const ws = S.weekStart;
   const hid = S.household.id;
   const pendingLoad = loadPendingPrices().catch(() => {});
