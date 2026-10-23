@@ -132,9 +132,14 @@ strong { font-weight: 650; }
 .tabbar a {
   position: relative;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  min-width: 0; padding-inline: 2px;
   text-decoration: none; color: var(--muted); font-size: .75rem; font-weight: 600; white-space: nowrap;
   transition: color var(--t) var(--ease);
 }
+.tabbar .tab-label { max-width: 100%; line-height: 1.1; text-align: center; }
+/* Distant weeks say "Week of Oct 26" — wrap inside the cell so the bar stays five equal tabs. */
+.tabbar a.tab-week.long { white-space: normal; }
+.tabbar a.tab-week.long .tab-label { font-size: .6875rem; letter-spacing: -.01em; }
 .tabbar a .ico { width: 24px; height: 24px; position: relative; z-index: 1; transition: transform var(--t) var(--ease); }
 .tabbar a svg.ico { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tabbar a::before {

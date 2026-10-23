@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live8';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live8';
-import { applyListLivePayload } from './list-live.js?v=live8';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live9';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live9';
+import { applyListLivePayload } from './list-live.js?v=live9';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -305,9 +305,16 @@ function icon(name) {
 }
 
 function tabbar(active) {
-  const tab = (id, label) => h('a', { href: `#/${id}`, class: active === id ? 'active' : '', 'aria-current': active === id ? 'page' : null }, icon(id), label);
+  // Same title as the dinners header (This week / Next week / Last week / Week of …).
+  const weekName = S.weekStart ? weekTitle(S.weekStart) : 'This week';
+  const tab = (id, label, extra) => h('a', {
+    href: `#/${id}`,
+    class: [extra, active === id ? 'active' : ''].filter(Boolean).join(' '),
+    'aria-current': active === id ? 'page' : null,
+  }, icon(id), h('span', { class: 'tab-label' }, label));
   return h('nav', { class: 'tabbar', 'aria-label': 'Main' }, h('div', { class: 'inner' },
-    tab('week', 'This week'), tab('shop', 'Shopping'), tab('staples', 'Staples'), tab('recipes', 'Recipes'), tab('settings', 'Settings')));
+    tab('week', weekName, weekName.startsWith('Week of') ? 'tab-week long' : 'tab-week'),
+    tab('shop', 'Shopping'), tab('staples', 'Staples'), tab('recipes', 'Recipes'), tab('settings', 'Settings')));
 }
 function topbar(title, extra) {
   return h('header', { class: 'topbar' },
