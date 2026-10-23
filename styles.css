@@ -109,6 +109,9 @@ strong { font-weight: 650; }
 .topbar .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .topbar .sub { color: var(--navy); font-size: .9375rem; font-weight: 600; margin-top: 6px; }
 .topbar > .row + * { margin-top: 16px; }
+/* Scroll column under the topbar. Flex (not grid): a 1-col grid inside an
+   overflow scroller was sizing auto rows to ~header height, so Dinners /
+   Votes / Breakfast painted on top of each other (live10 regression). */
 .content {
   width: min(640px, 100%); min-width: 0; margin-inline: auto; align-self: center;
   flex: 1 1 0%; min-height: 0;
@@ -116,12 +119,9 @@ strong { font-weight: 650; }
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   padding: 16px 16px 32px;
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px;
-  align-content: start;
+  display: flex; flex-direction: column; gap: 16px;
 }
-/* Don't let a section shrink onto the next one. overflow:hidden used to zero
-   the status row's minimum size, so Safari painted Dinners over "Locked". */
-.content > * { align-self: start; min-height: min-content; }
+.content > * { flex: none; min-width: 0; }
 
 /* nav: in the shell, under the scroller — not position:fixed (that drifts mid-list on iOS) */
 .tabbar {
@@ -158,8 +158,6 @@ strong { font-weight: 650; }
 
 /* cards: white on near-white, with a solid baby blue header band */
 .card { background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 20px; }
-/* Keep the blue Dinners band inside its card so a negative margin can't cover the rows above it. */
-#dinners { overflow: clip; }
 .card.flat { background: transparent; border: 0; }
 .card-head { display: grid; gap: 6px; margin-bottom: 8px; }
 .card-head p { line-height: 1.45; }

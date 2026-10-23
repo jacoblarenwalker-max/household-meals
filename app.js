@@ -1,7 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live10';
-import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live10';
-import { applyListLivePayload } from './list-live.js?v=live10';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, HOUSEHOLD_TZ, VAPID_PUBLIC_KEY } from './config.js?v=live11';
+import { GROCERY_CATEGORIES, canonCategory, categorize } from './categorize.js?v=live11';
+import { applyListLivePayload } from './list-live.js?v=live11';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
